@@ -1,18 +1,16 @@
 from dotenv import load_dotenv
 import os
 from langgraph.graph import StateGraph, START, END
-from typing import Annotated, Sequence, List, Optional, TypedDict
+from typing import Annotated, Sequence, List, Optional, TypedDict, Literal
 from langchain_core.messages import BaseMessage, SystemMessage, HumanMessage, ToolMessage
 from operator import add as add_messages
 from langchain_huggingface import HuggingFaceEndpoint, ChatHuggingFace, HuggingFaceEmbeddings
-# from langchain_community.document_loaders import PyPDFLoader
 from langchain_chroma import Chroma
 from langchain_core.tools import tool, StructuredTool
 from langgraph.prebuilt import ToolNode, tools_condition
 from pydantic import BaseModel, FilePath
-import pandas as pd
-import polars
-from IPython.display import Image, display
+import polars as pl
+from langgraph.types import interrupt, Command
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -21,50 +19,57 @@ class AgentState(TypedDict):
     messages: Annotated[Sequence[BaseMessage], add_messages]
     cols: Optional[List[str]]
     metadata: Optional[List[str]]
+    file_path: str
+    file_format: str
     
-# class MetaData(BaseModel):
-#     col_name: str
-#     col_desc: str
-    
+
 @tool
-def extract_columns(file_path:str) -> str:
+def extract_columns(state:AgentState) -> str:
     """
-    This tool reads and extracts column name and description from the file
+    This tool reads and extracts column name from the file
     Args:
         file_path (str): metadata file path 
     
     Return:
-        Metadata object contains column name and brief column description
+        List of column names
     """
-    if not os.path.exists(file_path):
-        return []
-    
-    _, file_extension = os.path.splitext(file_path)
-    
+    if not os.path.exists(state['file_path']):
+        return []    
     cols = []
     
     try:
-        if file_extension == '.csv':
-            df = polars.read_csv(file_path, n_rows=0)
+        if state['file_format'] == '.csv':
+            df = pl.read_csv(state['file_path'])
             cols = df.columns
-        elif file_extension in ['.xlsx', '.xls']:
-            df = polars.read_excel(file_path, n_rows=0)
+        elif state['file_format'] in ['.xlsx', '.xls']:
+            df = pl.read_excel(state['file_path'])
             cols = df.columns
-        elif file_extension == '.json':
-            df = polars.read_json(file_path)
+        elif state['file_format'] == '.json':
+            df = pl.read_json(state['file_path'])
             cols = df.columns
     except Exception as e:
         return str(e)
 
     return cols
 
+class CleaningAction(BaseModel):
+    column: str
+    issue: str                 
+    proposed_action: str      
+    status: Literal["pending", "approved", "rejected", "edited"] = "pending"
+    
+# @tool
+# def profile_node(state:AgentState):
+#     pass
+    
+tools = [extract_columns]
+
 hf_endpoint = HuggingFaceEndpoint(
     repo_id='Qwen/Qwen2.5-7B-Instruct',
 )
 
-llm = ChatHuggingFace(llm=hf_endpoint).bind_tools(tools=[extract_columns])
+llm = ChatHuggingFace(llm=hf_endpoint).bind_tools(tools=tools)    
 
-    
 def extract_metadata_node(state: AgentState):
     """
     This node invokes the LLM. If the user asks about a dataset, 
@@ -73,16 +78,41 @@ def extract_metadata_node(state: AgentState):
     messages = state['messages']
     
     system_prompt = SystemMessage(
-        content="You are a data assistant. NEVER call extract_columns with a placeholder "
-                "or example file path. If the user has not provided a real, specific file "
-                "path (e.g. 'data.csv', './sales/report.xlsx'), ask them for it instead of "
-                "guessing or calling the tool. After receiving tool results, only describe "
-                "columns that actually appear in the tool output — never invent columns "
-                "that were not returned."
+        content="""
+            You are a data assistant. NEVER call extract_columns with a placeholder 
+            or example file path. If the user has not provided a real, specific file 
+            path, ask them for it instead of guessing. 
+            
+            After receiving tool results, generate plain-language business descriptions 
+            for each column (e.g., "The age of the passenger in years" or "The ticket class").
+            NEVER invent columns that were not returned by the tool.
+            
+            Update 'file_path', 'file_format' in state by the path in HumanMessage
+            
+            Return the response EXACTLY in the format of 2 Python lists:
+            column_name = [...]
+            column_metadata = [...] # Put your plain-language descriptions here
+            
+            Do not include any extra text, notes, or markdown formatting outside the lists.
+        """
     )
     
     response = llm.invoke([system_prompt] + messages)
+    print(state)
     return {'messages': [response]}
+
+# def get_approval(state:AgentState):
+#     print('Wait for approval')
+#     print(f'Task: {state['']}')
+#     decision = interrupt("Please enter 'approve' or 'reject' to continue")
+#     return {'decision': decision}
+
+# @tool
+# def clean_dataset(file_path:FilePath):
+#     pass
+
+# def condition_edge(state:AgentState) -> AgentState:
+#     messages = state['messages']
 
 graph = StateGraph(AgentState)
 graph.add_node('extract_metadata', extract_metadata_node)
@@ -106,10 +136,3 @@ while user_input.lower() != 'exit':
             print(last_message.content if last_message.content else "[Tool Call]")
             
     user_input = input("Enter: ")
-    
-# @tool
-# def clean_dataset(file_path:FilePath):
-#     pass
-
-# def condition_edge(state:AgentState) -> AgentState:
-#     messages = state['messages']
