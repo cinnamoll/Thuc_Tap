@@ -12,8 +12,15 @@ from pydantic import BaseModel, FilePath
 import polars as pl
 from langgraph.types import interrupt, Command
 from dotenv import load_dotenv
+from langchain_core.language_models.chat_models import BaseChatModel
 
 load_dotenv()
+
+hf_endpoint = HuggingFaceEndpoint(
+    repo_id='Qwen/Qwen2.5-7B-Instruct',
+)
+
+llm = ChatHuggingFace(llm=hf_endpoint) 
 
 class AgentState(TypedDict):
     messages: Annotated[Sequence[BaseMessage], add_messages]
@@ -21,7 +28,18 @@ class AgentState(TypedDict):
     metadata: Optional[List[str]]
     file_path: str
     file_format: str
-    
+    current_step: str
+    next_step: str
+
+
+def scan_file(file_path:str, file_format: str):
+    if file_format == 'csv':
+        df = pl.read_csv(file_path)
+    elif file_format in ['xlsx', 'xls']:
+        df = pl.read_excel(file_path)
+    elif file_format == 'json':
+        df = pl.read_json(file_path)
+    return df
 
 @tool
 def extract_columns(state:AgentState) -> str:
@@ -36,101 +54,11 @@ def extract_columns(state:AgentState) -> str:
     if not os.path.exists(state['file_path']):
         return []    
     cols = []
-    
-    try:
-        if state['file_format'] == 'csv':
-            df = pl.read_csv(state['file_path'])
-            cols = df.columns
-        elif state['file_format'] in ['xlsx', 'xls']:
-            df = pl.read_excel(state['file_path'])
-            cols = df.columns
-        elif state['file_format'] == 'json':
-            df = pl.read_json(state['file_path'])
-            cols = df.columns
-    except Exception as e:
-        return str(e)
-
+    df = scan_file(state['file_path'], state['file_format'])
+    cols = df.columns
     return cols
 
-class CleaningAction(BaseModel):
-    column: str
-    issue: str                 
-    proposed_action: str      
-    status: Literal["pending", "approved", "rejected", "edited"] = "pending"
-    
-@tool
-def profile_dataset(file_path: str) -> dict:
-    """
-    Scan a dataset (lazy, not loading the entire dataset into RAM) and return statistics:
-    dtypes, number of nulls and unique values ​​per column.
-    Used to detect problems before suggesting cleaning.
-    """
-    lf = pl.scan_csv(file_path)
-    schema = lf.collect_schema()
-    stats = lf.select([
-        pl.all().null_count().name.suffix("_nulls"),
-        pl.all().n_unique().name.suffix("_nunique"),
-    ]).collect(streaming=True)
-
-    return {
-        "columns": list(schema.names()),
-        "dtypes": {k: str(v) for k, v in schema.items()},
-        "stats": stats.to_dicts()[0],
-    }
-
-@tool
-def apply_cleaning(
-    file_path: str,
-    column: str,
-    action: Literal["drop_rows", "impute_median", "impute_mean", "impute_mode", "cast_dtype", "drop_column"],
-    output_path: str,
-    target_dtype: str = "",
-) -> str:
-    """
-    Apply a specific cleaning action to a column of the dataset and write the results to a new file.
-    Only call this tool after clearly identifying the problem via profile_dataset.
-    This tool will pause and wait for user confirmation before actually overwriting the data.
-    """
-    decision = interrupt({
-        "type": "confirm_cleaning",
-        "column": column,
-        "action": action,
-        "message": f"Use'{action}' on '{column}'? (approve/reject/edit)",
-    })
-
-    if decision.get("decision") == "reject":
-        return f"Cancel '{action}' on '{column}'"
-
-    if decision.get("decision") == "edit":
-        action = decision.get("new_action", action)
-
-    lf = pl.scan_csv(file_path)
-
-    if action == "drop_rows":
-        lf = lf.drop_nulls(subset=[column])
-    elif action == "impute_median":
-        lf = lf.with_columns(pl.col(column).fill_null(pl.col(column).median()))
-    elif action == "impute_mean":
-        lf = lf.with_columns(pl.col(column).fill_null(pl.col(column).mean()))
-    elif action == "impute_mode":
-        lf = lf.with_columns(pl.col(column).fill_null(pl.col(column).mode().first()))
-    elif action == "cast_dtype":
-        lf = lf.with_columns(pl.col(column).cast(getattr(pl, target_dtype)))
-    elif action == "drop_column":
-        lf = lf.drop(column)
-
-    lf.sink_csv(output_path) 
-    return f"Use '{action}' on '{column}', save value at {output_path}"
-    
-tools = [extract_columns, profile_dataset, apply_cleaning]
-
-hf_endpoint = HuggingFaceEndpoint(
-    repo_id='Qwen/Qwen2.5-7B-Instruct',
-)
-
-llm = ChatHuggingFace(llm=hf_endpoint).bind_tools(tools=tools)    
-
-def extract_metadata_node(state: AgentState):
+def extract_metadata_node(state: AgentState, llm:BaseChatModel):
     """
     This node invokes the LLM. If the user asks about a dataset, 
     the LLM will generate a tool_call to 'extract_columns'.
@@ -160,8 +88,73 @@ def extract_metadata_node(state: AgentState):
     response = llm.invoke([system_prompt] + messages)
     # print(state)
     return {'messages': [response]}
+    
+@tool
+def profile_dataset(file_path: str, file_format:str) -> dict:
+    """
+    Scan a dataset (lazy, not loading the entire dataset into RAM) and return statistics:
+    dtypes, number of nulls and unique values ​​per column.
+    Used to detect problems before suggesting cleaning.
+    """
+    lf = scan_file(file_path, file_format)
+    schema = lf.collect_schema()
+    stats = lf.select([
+        pl.all().null_count().name.suffix("_nulls"),
+        pl.all().n_unique().name.suffix("_nunique"),
+    ]).collect(streaming=True)
 
-def data_cleaning_node(state:AgentState):
+    return {
+        "columns": list(schema.names()),
+        "dtypes": {k: str(v) for k, v in schema.items()},
+        "stats": stats.to_dicts()[0],
+    }
+
+@tool
+def apply_cleaning(
+    file_path: str,
+    column: str,
+    action: Literal["drop_rows", "impute_median", "impute_mean", "impute_mode", "cast_dtype", "drop_column"],
+    output_path: str,
+    target_dtype: str = ""
+) -> str:
+    """
+    Apply a specific cleaning action to a column of the dataset and write the results to a new file.
+    Only call this tool after clearly identifying the problem via profile_dataset.
+    This tool will pause and wait for user confirmation before actually overwriting the data.
+    """
+    
+    decision = interrupt({
+        "type": "confirm_cleaning",
+        "column": column,
+        "action": action,
+        "message": f"Use'{action}' on '{column}'? (approve/reject/edit)",
+    })
+
+    if decision.get("decision") == "reject":
+        return f"Cancel '{action}' on '{column}'"
+
+    if decision.get("decision") == "edit":
+        action = decision.get("new_action", action)
+
+    lf = pl.scan_csv(file_path)
+
+    if action == "drop_rows":
+        lf = lf.drop_nulls(subset=[column])
+    elif action == "impute_median":
+        lf = lf.with_columns(pl.col(column).fill_null(pl.col(column).median()))
+    elif action == "impute_mean":
+        lf = lf.with_columns(pl.col(column).fill_null(pl.col(column).mean()))
+    elif action == "impute_mode":
+        lf = lf.with_columns(pl.col(column).fill_null(pl.col(column).mode().first()))
+    elif action == "cast_dtype":
+        lf = lf.with_columns(pl.col(column).cast(getattr(pl, target_dtype)))
+    elif action == "drop_column":
+        lf = lf.drop(column)
+
+    lf.sink_csv(output_path) 
+    return f"Use '{action}' on '{column}', save at {output_path}"
+    
+def data_cleaning_node(state:AgentState, llm:BaseChatModel):
     messages = state['messages']
     system_prompt = SystemMessage(
         content="""
@@ -174,7 +167,160 @@ def data_cleaning_node(state:AgentState):
         """
     )
     response = llm.invoke([system_prompt] + messages)
-    return {'messages': [response]}
+    return {'messages': [response]}    
+
+#eda
+@tool
+def univariate_analyst(file_path: str, column: str) -> str:
+    """
+    Apply this tool only to numeric data columns to extract statistical analysis containing:
+        - Measures central tendency (mean, median) to find the typical value.
+        - Measures dispersion (range, variance, standard deviation) to see how data spreads.
+        - Detects patterns like skewness or outliers that affect data interpretation.
+
+    Args:
+        file_path (str): path to the dataset file
+        column (str): name of the numeric column to analyze
+
+    Returns:
+        A text summary of the statistical analysis for the given column.
+    """
+    lf = pl.scan_csv(file_path)
+    schema = lf.collect_schema()
+
+    if column not in schema.names():
+        return f"'{column}' not found in dataset."
+
+    dtype = schema[column]
+    if dtype not in (pl.Int8, pl.Int16, pl.Int32, pl.Int64,
+                      pl.Float32, pl.Float64, pl.UInt8, pl.UInt16, pl.UInt32, pl.UInt64):
+        return f"'{column}' is not numeric (dtype={dtype}). Use a categorical analysis tool instead."
+
+    stats = lf.select([
+        pl.col(column).mean().alias("mean"),
+        pl.col(column).median().alias("median"),
+        pl.col(column).min().alias("min"),
+        pl.col(column).max().alias("max"),
+        pl.col(column).var().alias("variance"),
+        pl.col(column).std().alias("std"),
+        pl.col(column).skew().alias("skewness"),
+        pl.col(column).quantile(0.25).alias("q1"),
+        pl.col(column).quantile(0.75).alias("q3"),
+        pl.col(column).null_count().alias("null_count"),
+        pl.col(column).count().alias("count"),
+    ]).collect(streaming=True).to_dicts()[0]
+
+    q1, q3 = stats["q1"], stats["q3"]
+    iqr = q3 - q1
+    lower_bound = q1 - 1.5 * iqr
+    upper_bound = q3 + 1.5 * iqr
+
+    outlier_count = lf.select(
+        pl.col(column).filter(
+            (pl.col(column) < lower_bound) | (pl.col(column) > upper_bound)
+        ).count().alias("outliers")
+    ).collect(streaming=True).item()
+
+    skew = stats["skewness"]
+    if skew is None:
+        skew_desc = "không xác định"
+    elif abs(skew) < 0.5:
+        skew_desc = "phân phối gần đối xứng (approximately symmetric)"
+    elif skew > 0.5:
+        skew_desc = "lệch phải (right-skewed / positive skew)"
+    else:
+        skew_desc = "lệch trái (left-skewed / negative skew)"
+
+    range_val = stats["max"] - stats["min"]
+    
+    res = f"""
+        Univariate analysis on {column}
+        Valid value: {stats['count']} (null: {stats['null_count']})
+        Central tendency: 
+            - Mean:   {stats['mean']:.4f}
+            - Median: {stats['median']:.4f}
+        
+        Dispersion:
+            - Range:    {range_val:.4f} (min={stats['min']:.4f}, max={stats['max']:.4f})
+            - Variance: {stats['variance']:.4f}
+            - Std Dev:  {stats['std']:.4f}
+            - IQR:      {iqr:.4f} (Q1={q1:.4f}, Q3={q3:.4f})
+        
+        Distribution shape:
+            - Skewness: {skew:.4f} → {skew_desc}
+            - Outliers (IQR method, outside [{lower_bound:.4f}, {upper_bound:.4f}]): {outlier_count} values
+    
+    """
+    return res.strip()
+    
+@tool 
+def multivariate_analyst(file_path: str, column: str) -> str:
+    pass
+
+@tool
+def draw_graph(
+    column: str,
+    metadata: str
+):
+    pass
+    
+    
+eda_tools = [univariate_analyst, multivariate_analyst, draw_graph]
+eda_llm = llm.bind_tools(tools=eda_tools)
+
+def eda_agent_node(state: AgentState):
+    response = eda_llm.invoke(state["messages"])
+    return {"messages": [response]}
+
+eda_graph = StateGraph(AgentState)
+
+eda_graph.add_node('eda_agent', eda_agent_node)
+eda_graph.add_node('eda_tools', ToolNode(eda_tools))
+
+eda_graph.add_edge(START, 'eda_agent')
+eda_graph.add_edge('eda_agent', tools_condition)
+eda_graph.add_edge('eda_tools', 'eda_agent')
+
+eda = eda_graph.compile()
+
+#feature engineering
+@tool
+def feature_transformation():
+    pass
+
+@tool
+def binning_encoding():
+    pass
+
+@tool
+def feature_selection():
+    pass
+
+feature_tools = [feature_transformation, binning_encoding, feature_selection]
+feature_llm = llm.bind_tools(tools=feature_tools)
+
+def feature_agent_node(state: AgentState):
+    response = feature_llm.invoke(state["messages"])
+    return {"messages": [response]}
+
+feature_graph = StateGraph(AgentState)
+
+feature_graph.add_node('feature_agent', feature_agent_node)
+feature_graph.add_node('eda_tools', ToolNode(feature_tools))
+
+feature_graph.add_edge(START, 'feature_agent')
+feature_graph.add_edge('feature_agent', tools_condition)
+feature_graph.add_edge('feature_tools', 'feature_agent')
+
+feature_engineering = feature_graph.compile()
+
+# def route_supervisor_decision():
+#     pass
+
+#main graph
+tools = [extract_columns, profile_dataset, apply_cleaning]  
+
+llm = llm.bind_tools(tools=tools) 
 
 graph = StateGraph(AgentState)
 graph.add_node('extract_metadata', extract_metadata_node)
@@ -188,6 +334,21 @@ graph.add_conditional_edges(
 )
 graph.add_edge('tools', 'extract_metadata')
 graph.add_edge('extract_metadata', 'clean_dataset')
+graph.add_edge('eda', eda)
+graph.add_edge('feature_engineering', feature_engineering)
+
+graph.add_conditional_edges(
+    'clean_dataset',
+    # route_supervisor_decision
+    'next_step',
+    {
+        'EDA': 'eda',
+        'Feature_engineering': 'feature_engineering',
+        'FINISH': END
+    }
+)
+
+graph.add_edge('EDA', 'clean_dataset')
 
 app = graph.compile()
 
@@ -200,3 +361,4 @@ while user_input.lower() != 'exit':
             print(last_message.content if last_message.content else "[Tool Call]")
             
     user_input = input("Enter: ")
+    
