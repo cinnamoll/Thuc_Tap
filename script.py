@@ -93,7 +93,7 @@ def extract_metadata_node(state: AgentState, llm:BaseChatModel):
 def profile_dataset(file_path: str, file_format:str) -> dict:
     """
     Scan a dataset (lazy, not loading the entire dataset into RAM) and return statistics:
-    dtypes, number of nulls and unique values ​​per column.
+    dtypes, number of nulls for both numerical and categorical columns and unique values for categorical column.
     Used to detect problems before suggesting cleaning.
     """
     lf = scan_file(file_path, file_format)
@@ -171,7 +171,7 @@ def data_cleaning_node(state:AgentState, llm:BaseChatModel):
 
 #eda
 @tool
-def univariate_analyst(file_path: str, column: str) -> str:
+def univariate_analyst_numeric(file_path: str, column: str) -> str:
     """
     Apply this tool only to numeric data columns to extract statistical analysis containing:
         - Measures central tendency (mean, median) to find the typical value.
@@ -225,11 +225,11 @@ def univariate_analyst(file_path: str, column: str) -> str:
     if skew is None:
         skew_desc = "không xác định"
     elif abs(skew) < 0.5:
-        skew_desc = "phân phối gần đối xứng (approximately symmetric)"
+        skew_desc = "approximately symmetric"
     elif skew > 0.5:
-        skew_desc = "lệch phải (right-skewed / positive skew)"
+        skew_desc = "right-skewed"
     else:
-        skew_desc = "lệch trái (left-skewed / negative skew)"
+        skew_desc = "left-skewed / negative skew"
 
     range_val = stats["max"] - stats["min"]
     
@@ -253,6 +253,86 @@ def univariate_analyst(file_path: str, column: str) -> str:
     """
     return res.strip()
     
+    
+@tool
+def univariate_analyst_cat(file_path: str, column: str) -> str:
+    """
+    Apply this tool only to nominal data columns to extract statistical analysis containing:
+        - Unique column values, mode and count of distinct categories in our variable
+        - Generate a frequency table, containing 6 columns [Column_value, Value_count, Frequency, Percentage]
+        divided into 2 parts of Valid values and Missing Values
+
+    Args:
+        file_path (str): path to the dataset file
+        column (str): name of the nominal column to analyze
+
+    Returns:
+        A text summary of the statistical analysis for the given column.
+    """
+    lf = pl.scan_csv(file_path)
+    schema = lf.collect_schema()
+
+    if column not in schema.names():
+        return f"'{column}' not found in dataset."
+
+    dtype = schema[column]
+    if dtype not in (pl.Categorical, pl.String) and not isinstance(dtype, pl.Enum):
+        return f"'{column}' is not a nominal/categorical type (dtype={dtype}). Use a numeric analysis tool instead."
+    
+    stats = lf.select([
+        pl.col(column).drop_nulls().mode().implode().alias("mode"),
+        pl.col(column).drop_nulls().n_unique().alias("n_unique"),
+        pl.col(column).is_not_null().sum().alias("valid_count"),
+        pl.col(column).is_null().sum().alias("null_count"),
+        pl.len().alias("total_count")
+    ]).collect()
+
+    modes = stats.get_column("mode").item()
+    n_unique = stats.get_column("n_unique").item()
+    valid_count = stats.get_column("valid_count").item()
+    null_count = stats.get_column("null_count").item()
+    total_count = stats.get_column("total_count").item()
+
+    df = lf.select(pl.col(column)).collect()
+
+    freq_table = (
+        df.group_by(column)
+        .agg(pl.len().alias("Value_count"))
+        .with_columns(
+            (pl.col("Value_count") / total_count).alias("Frequency"),
+            ((pl.col("Value_count") / total_count) * 100).alias("Percentage")
+        )
+        .sort("Value_count", descending=True)
+        .rename({column: "Column_value"})
+    )
+
+    valid_df = freq_table.filter(pl.col("Column_value").is_not_null())
+    missing_df = freq_table.filter(pl.col("Column_value").is_null())
+
+    with pl.Config(tbl_rows=valid_df.height if valid_df.height > 0 else 1, tbl_cols=4):
+        valid_str = str(valid_df) if not valid_df.is_empty() else "No valid data found."
+        
+    with pl.Config(tbl_rows=missing_df.height if missing_df.height > 0 else 1, tbl_cols=4):
+        missing_str = str(missing_df) if not missing_df.is_empty() else "No missing values."
+
+    mode_str = ', '.join(map(str, modes)) if modes else "None"
+
+    res = f"""
+        Univariate analysis on {column}
+        Valid value: {valid_count} (null: {null_count})
+        Central tendency: 
+            - Mode:                {mode_str}
+            - Distinct Categories: {n_unique}
+        
+        Distribution (Valid Values):
+        {valid_str}
+        
+        Missing Values Analysis:
+        {missing_str}
+    """
+    
+    return res
+    
 @tool 
 def multivariate_analyst(file_path: str, column: str) -> str:
     pass
@@ -264,8 +344,7 @@ def draw_graph(
 ):
     pass
     
-    
-eda_tools = [univariate_analyst, multivariate_analyst, draw_graph]
+eda_tools = [univariate_analyst_numeric, univariate_analyst_cat, multivariate_analyst, draw_graph]
 eda_llm = llm.bind_tools(tools=eda_tools)
 
 def eda_agent_node(state: AgentState):
@@ -289,14 +368,83 @@ def feature_transformation():
     pass
 
 @tool
-def binning_encoding():
-    pass
+def encoding_tool(
+    file_path: str, 
+    column: str,
+    action: Literal["label_encoding", "ordinal_encoding", "frequency_encoding", "one_hot_encoding"]
+) -> str:
+    f"""
+    Apply this tool only to nominal data columns to encoding:
+        - Use result from univariate_analyst_cat as input to suggest encoding plans
+
+    Args:
+        file_path (str): path to the dataset file
+        column (str): name of the nominal column to analyze
+
+    Returns:
+        - A new Encoded/Binned column
+    """
+    lf = pl.scan_csv(file_path)
+    schema = lf.collect_schema()
+
+    if column not in schema.names():
+        return f"'{column}' not found in dataset."
+
+    dtype = schema[column]
+    if dtype not in (pl.Categorical, pl.String) and not isinstance(dtype, pl.Enum):
+        return f"'{column}' is not a nominal/categorical type (dtype={dtype})"
+    
+    decision = interrupt({
+        "type": "confirm_encoding",
+        "column": column,
+        "action": action,
+        "message": f"Use'{action}' on '{column}'? (approve/reject/edit)",
+    })
+    
+    if decision.get("decision") == "reject":
+        return f"Cancel '{action}' on '{column}'"
+
+    if decision.get("decision") == "edit":
+        action = decision.get("new_action", action)
+        
+    df = lf.select(pl.col(column)).collect()
+    
+    if action == 'frequency_encoding':
+        encoded_df = df.with_columns(
+            (pl.len().over(column) / df.height).alias(f'{column}_encoded')
+        )   
+    elif action == 'label_encoding':
+        encoded_df = df.with_columns(
+            pl.col(column).cast(pl.Categorical).to_physical().alias(f'{column}_encoded')
+        )
+    elif action == 'ordinal_encoding':
+        unique_vals = df.get_column(column).drop_nulls().unique().sort()
+        mapping = {val: i for i, val in enumerate(unique_vals)}
+            
+        encoded_df = df.with_columns(
+            pl.col(column).replace(mapping, default=None).cast(pl.Int32).alias(f'{column}_encoded')
+        )   
+    elif action == 'one_hot_encoding':
+        encoded_df = df.to_dummies(columns=[column])
+        
+    with pl.Config(tbl_rows=5, tbl_cols=6):
+        sample_str = str(encoded_df.head(5))
+    
+    res = f"""
+        Encoding Action Completed:
+        - Target Column: '{column}'
+        - Method Applied: {action.upper()}
+        - New DataFrame Glimpse (First 5 rows):
+        {sample_str}
+    """
+    
+    return res
 
 @tool
 def feature_selection():
     pass
 
-feature_tools = [feature_transformation, binning_encoding, feature_selection]
+feature_tools = [feature_transformation, encoding_tool, feature_selection]
 feature_llm = llm.bind_tools(tools=feature_tools)
 
 def feature_agent_node(state: AgentState):
@@ -326,6 +474,8 @@ graph = StateGraph(AgentState)
 graph.add_node('extract_metadata', extract_metadata_node)
 graph.add_node('clean_dataset', data_cleaning_node)
 graph.add_node('tools', ToolNode(tools=tools))
+graph.add_node('eda', eda)
+graph.add_node('feature_engineering', feature_engineering)
 
 graph.add_edge(START, 'extract_metadata')
 graph.add_conditional_edges(
@@ -333,22 +483,19 @@ graph.add_conditional_edges(
     tools_condition
 )
 graph.add_edge('tools', 'extract_metadata')
-graph.add_edge('extract_metadata', 'clean_dataset')
-graph.add_edge('eda', eda)
-graph.add_edge('feature_engineering', feature_engineering)
 
 graph.add_conditional_edges(
-    'clean_dataset',
+    'extract_metadata',
     # route_supervisor_decision
     'next_step',
     {
+        'Cleaning': 'cleaning',
         'EDA': 'eda',
         'Feature_engineering': 'feature_engineering',
         'FINISH': END
     }
 )
 
-graph.add_edge('EDA', 'clean_dataset')
 
 app = graph.compile()
 
@@ -361,4 +508,3 @@ while user_input.lower() != 'exit':
             print(last_message.content if last_message.content else "[Tool Call]")
             
     user_input = input("Enter: ")
-    
