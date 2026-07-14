@@ -92,7 +92,7 @@ cleaning_tools = [profile_dataset, apply_cleaning]
 cleaning_llm = llm.bind_tools(cleaning_tools)
 cleaning_tools_dict = {cleaning_tool.name: cleaning_tool for cleaning_tool in cleaning_tools}
 
-def data_cleaning_node(state:AgentState, llm:BaseChatModel):
+def data_cleaning_node(state:AgentState):
     messages = state['messages']
     system_prompt = SystemMessage(
         content="""

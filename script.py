@@ -10,8 +10,6 @@ from langchain_core.tools import tool, StructuredTool
 from langgraph.prebuilt import ToolNode, tools_condition
 import polars as pl
 from langgraph.types import interrupt, Command
-from langchain_core.language_models.chat_models import BaseChatModel
-from pydantic import BaseModel, Field
 
 from AgentState import AgentState
 from eda import eda
@@ -36,7 +34,7 @@ def scan_file(file_path:str, file_format: str):
     return df
 
 @tool
-def extract_columns(state:AgentState) -> str:
+def extract_columns(file_path: str, file_format: str) -> List[str]:
     """
     This tool reads and extracts column name from the file
     Args:
@@ -45,14 +43,14 @@ def extract_columns(state:AgentState) -> str:
     Return:
         List of column names
     """
-    if not os.path.exists(state['file_path']):
+    if not os.path.exists('file_path'):
         return []    
     cols = []
-    df = scan_file(state['file_path'], state['file_format'])
+    df = scan_file('file_path', 'file_format')
     cols = df.columns
     return cols
 
-def extract_metadata_node(state: AgentState, llm:BaseChatModel):
+def extract_metadata_node(state: AgentState):
     """
     This node invokes the LLM. If the user asks about a dataset, 
     the LLM will generate a tool_call to 'extract_columns'.
@@ -84,7 +82,6 @@ def extract_metadata_node(state: AgentState, llm:BaseChatModel):
     return {'messages': [response]}
 
 
-
 #main graph
 tools = [extract_columns]  
 
@@ -101,7 +98,7 @@ graph.add_conditional_edges(
 )
 graph.add_edge('tools', 'extract_metadata')
 
-class RouteDecision(BaseModel):
+class RouteDecision(TypedDict):
     next: Literal["cleaning", "eda", "feature_engineering", "FINISH"]
     reason: str 
 
@@ -127,7 +124,7 @@ def supervisor_node(state: AgentState) -> Command[Literal["cleaning", "eda", "fe
     ]
     
     decision = llm_router.invoke(messages)
-    goto = decision.next
+    goto = decision["next"]
     
     if goto == "FINISH":
         goto = END
@@ -135,12 +132,13 @@ def supervisor_node(state: AgentState) -> Command[Literal["cleaning", "eda", "fe
     return Command(
         goto=goto,
         update={
-            "next_step": decision.next,
-            "messages": [HumanMessage(content=f"[Supervisor] -> {decision.next}: {decision.reason}")],
+            "next_step": decision['next'],
+            "messages": [HumanMessage(content=f"[Supervisor] -> { decision['next']}: { decision['reason']}")],
         },
     )
 
 graph.add_node('supervisor', supervisor_node)
+graph.add_edge('extract_metadata', 'supervisor')
 
 graph.add_node('cleaning', cleaning)
 graph.add_edge('cleaning', 'supervisor')
@@ -153,9 +151,9 @@ graph.add_edge('feature_engineering', 'supervisor')
 
 app = graph.compile()
 
-img = app.get_graph().draw_mermaid_png()
-with open('graph_image.png', 'wb') as f:
-    f.write(img)
+# img = app.get_graph().draw_mermaid_png()
+# with open('graph_image.png', 'wb') as f:
+#     f.write(img)
 
 
 user_input = input("Enter: ")

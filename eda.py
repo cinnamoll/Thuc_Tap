@@ -22,16 +22,6 @@ hf_endpoint = HuggingFaceEndpoint(
 )
 
 llm = ChatHuggingFace(llm=hf_endpoint) 
-
-class AgentState(TypedDict):
-    messages: Annotated[Sequence[BaseMessage], add_messages]
-    cols: Optional[List[str]]
-    metadata: Optional[List[str]]
-    file_path: str
-    file_format: str
-    current_step: str
-    next_step: str
-    completed_steps: Optional[List[str]]
     
 @tool
 def univariate_analyst_numeric(file_path: str, column: str) -> str:

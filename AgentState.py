@@ -8,6 +8,6 @@ class AgentState(TypedDict):
     metadata: Optional[List[str]]
     file_path: str
     file_format: str
-    current_step: str
-    next_step: str
+    current_step: Optional[str]
+    next_step: Optional[str]
     completed_steps: Optional[List[str]]

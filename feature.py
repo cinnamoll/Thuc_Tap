@@ -101,6 +101,7 @@ def encoding_tool(
     
     return res
 
+@tool
 def binning_standardizing_tool(
     file_path: str, 
     column: str,
