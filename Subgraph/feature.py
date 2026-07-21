@@ -4,16 +4,18 @@ from langgraph.graph import StateGraph, START, END
 from typing import Annotated, Sequence, List, Optional, TypedDict, Literal
 from langchain_core.messages import BaseMessage, SystemMessage, HumanMessage, ToolMessage
 from operator import add as add_messages
-from langchain_huggingface import HuggingFaceEndpoint, ChatHuggingFace, HuggingFaceEmbeddings
+from langchain_huggingface import HuggingFaceEndpoint, ChatHuggingFace
 from langchain_chroma import Chroma
 from langchain_core.tools import tool, StructuredTool
 from langgraph.prebuilt import ToolNode, tools_condition
 import polars as pl
 from langgraph.types import interrupt, Command
 from langchain_core.language_models.chat_models import BaseChatModel
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
+from enum import Enum
 
-from AgentState import AgentState
+from BT_Thuc_Tap.Class.AgentState import AgentState
+from BT_Thuc_Tap.Class.BaseClass import BaseAction
 
 load_dotenv()
 
@@ -23,10 +25,47 @@ hf_endpoint = HuggingFaceEndpoint(
 
 llm = ChatHuggingFace(llm=hf_endpoint) 
 
-#feature engineering
-# @tool
-# def feature_transformation():
-#     pass
+class EngineeringType(str, Enum):
+    LABEL = "label_encoding" 
+    ORDINAL = "ordinal_encoding"
+    FREQUENCY = "frequency_encoding"
+    ONE_HOT = "one_hot_encoding"
+    EQUAL_WIDTH = "equal_width"
+    QUANTILE = "quantile"
+    STANDARDIZE = "standardize"
+
+class EngineeringAction(BaseAction):
+    column: str
+    actionType: EngineeringType
+    target_dtype: str
+
+    @field_validator("target_dtype")
+    @classmethod
+    def require_dtype_for_cast(cls, v, info):
+        if info.data.get("actionType") == EngineeringType.CAST_DTYPE and not v:
+            raise ValueError("cast_dtype needs target_dtype")
+        return v 
+
+@tool
+def profile_dataset(file_path: str, file_format:str) -> dict:
+    """
+    Scan a dataset (lazy, not loading the entire dataset into RAM) and return statistics:
+    dtypes, number of nulls for both numerical and categorical columns and unique values for categorical column.
+    Used to detect problems before suggesting cleaning.
+    """
+    lf = pl.scan_file(file_path, file_format)
+    schema = lf.collect_schema()
+    stats = lf.select([
+        pl.all().null_count().name.suffix("_nulls"),
+        pl.all().n_unique().name.suffix("_nunique"),
+    ]).collect(streaming=True)
+
+    return {
+        "columns": list(schema.names()),
+        "dtypes": {k: str(v) for k, v in schema.items()},
+        "stats": stats.to_dicts()[0],
+        "n_rows": lf.select(pl.len()).collect().item()
+    }
 
 @tool
 def encoding_tool(
@@ -182,14 +221,22 @@ def binning_standardizing_tool(
     
     return res
     
-
 # @tool
-# def feature_selection():
+# def preview_feature():
 #     pass
 
-feature_tools = [encoding_tool, binning_standardizing_tool]
+feature_tools = [profile_dataset, encoding_tool, binning_standardizing_tool]
 feature_llm = llm.bind_tools(tools=feature_tools)
 feature_tools_dict = {feature_tool.name: feature_tool for feature_tool in feature_tools}
+
+def feature_agent_node(state: AgentState):
+    response = feature_llm.invoke(state["messages"])
+    return {"messages": [response]}
+
+def propose_action_node(state: AgentState) -> AgentState:
+    structured_llm = llm.with_structured_output(EngineeringAction)
+    action = structured_llm.invoke(state["messages"])
+    return {"cleaning_action": action}
 
 def take_action_feature(state:AgentState) -> AgentState:
     tool_calls = state['messages'][-1].tool_calls
@@ -202,7 +249,7 @@ def take_action_feature(state:AgentState) -> AgentState:
             result = "Incorrect Tool Name, Please Retry and Select tool from List of Available tools."
         
         else:
-            result = feature_tools_dict[t['name']].invoke(t['args'].get('query', ''))
+            result = feature_tools_dict[t['name']].invoke(t['args'])
             print(f"Result length: {len(str(result))}")
             
         results.append(ToolMessage(tool_call_id=t['id'], name=t['name'], content=str(result)))
@@ -210,26 +257,24 @@ def take_action_feature(state:AgentState) -> AgentState:
     print("Tools Execution Complete. Back to the supervisor!")
     return {'messages': results}
 
-def route_tool_or_finish(state) -> Literal["feature_tools", END]: #type:ignore
+def route_tool_or_finish(state) -> Literal["feature_tools", "propose_action"]: #type:ignore
     last_msg = state["messages"][-1]
     if getattr(last_msg, "tool_calls", None):
         return "feature_tools"
-    return END
-
-def feature_agent_node(state: AgentState):
-    response = feature_llm.invoke(state["messages"])
-    return {"messages": [response]}
+    return "propose_action"
 
 feature_graph = StateGraph(AgentState)
 feature_graph.add_node('feature_agent', feature_agent_node)
 feature_graph.add_node('feature_tools', take_action_feature)
+feature_graph.add_node('propose_action', propose_action_node)
 
 feature_graph.add_edge(START, 'feature_agent')
 feature_graph.add_conditional_edges(
     "feature_agent",
     route_tool_or_finish,
-    {"feature_tools": "feature_tools", END: END},
+    {"feature_tools": "feature_tools", 'propose_action': 'propose_action'},
 )
+feature_graph.add_edge('propose_action', END)
 feature_graph.add_edge("feature_tools", "feature_agent")
 
 feature_engineering = feature_graph.compile()

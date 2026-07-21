@@ -1,5 +1,5 @@
-from typing import Annotated, Sequence, List, Optional, TypedDict, Literal
-from langchain_core.messages import BaseMessage, SystemMessage, HumanMessage, ToolMessage
+from typing import Annotated, Sequence, List, Optional, TypedDict
+from langchain_core.messages import BaseMessage
 from operator import add as add_messages
 
 class AgentState(TypedDict):
@@ -11,3 +11,6 @@ class AgentState(TypedDict):
     current_step: Optional[str]
     next_step: Optional[str]
     completed_steps: Optional[List[str]]
+    retry_count: Optional[int]
+    fallback_used: Optional[bool]
+    requires_approval: Optional[bool]

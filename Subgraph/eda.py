@@ -1,5 +1,4 @@
 from dotenv import load_dotenv
-import os
 from langgraph.graph import StateGraph, START, END
 from typing import Annotated, Sequence, List, Optional, TypedDict, Literal
 from langchain_core.messages import BaseMessage, SystemMessage, HumanMessage, ToolMessage
@@ -11,9 +10,12 @@ from langgraph.prebuilt import ToolNode, tools_condition
 import polars as pl
 from langgraph.types import interrupt, Command
 from langchain_core.language_models.chat_models import BaseChatModel
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
+import matplotlib.pyplot as plt
+import seaborn as sns
+from enum import Enum
 
-from AgentState import AgentState
+from BT_Thuc_Tap.Class.AgentState import AgentState
 
 load_dotenv()
 
@@ -23,6 +25,34 @@ hf_endpoint = HuggingFaceEndpoint(
 
 llm = ChatHuggingFace(llm=hf_endpoint) 
     
+class EDAInsight(BaseModel):
+    metric_name: str
+    value: float
+    n_rows: int
+    chart_path: Optional[str] = None
+    confidence_note: Optional[str] = None
+
+@tool
+def profile_dataset(file_path: str, file_format:str) -> dict:
+    """
+    Scan a dataset (lazy, not loading the entire dataset into RAM) and return statistics:
+    dtypes, number of nulls for both numerical and categorical columns and unique values for categorical column.
+    Used to detect problems before suggesting cleaning.
+    """
+    lf = pl.scan_file(file_path, file_format)
+    schema = lf.collect_schema()
+    stats = lf.select([
+        pl.all().null_count().name.suffix("_nulls"),
+        pl.all().n_unique().name.suffix("_nunique"),
+    ]).collect(streaming=True)
+
+    return {
+        "columns": list(schema.names()),
+        "dtypes": {k: str(v) for k, v in schema.items()},
+        "stats": stats.to_dicts()[0],
+        "n_rows": lf.select(pl.len()).collect().item()
+    }
+
 @tool
 def univariate_analyst_numeric(file_path: str, column: str) -> str:
     """
@@ -185,21 +215,88 @@ def univariate_analyst_cat(file_path: str, column: str) -> str:
     """
     
     return res
-    
-# @tool 
-# def multivariate_analyst(file_path: str, column: str) -> str:
-#     pass
+ 
+@tool
+def draw_graph(cols: List[str], file_path: str) -> str:
+    """
+    Apply this tool to draw graph for user using columns name and dataset file_path.
 
-# @tool
-# def draw_graph(
-#     column: str,
-#     metadata: str
-# ):
-#     pass
+    Args:
+        cols (List[str]): column names
+        metadata (List[str]): column metadata
+        file_path (str): dataset file path
+
+    """
+    lf = pl.scan_csv(file_path)
+    schema = lf.collect_schema()
     
-eda_tools = [univariate_analyst_numeric, univariate_analyst_cat]
+    NUMERIC_TYPES = (pl.Int8, pl.Int16, pl.Int32, pl.Int64, pl.Float32, pl.Float64, 
+                     pl.UInt8, pl.UInt16, pl.UInt32, pl.UInt64)
+    CAT_TYPES = (pl.Categorical, pl.String, pl.Enum)
+
+    df_polars = lf.select([pl.col(c) for c in cols]).collect().drop_nulls()
+    df = df_polars.to_pandas()
+    
+    plt.figure(figsize=(10, 6))
+
+    if len(cols) == 1:
+        col = cols[0]
+        if schema[col] in CAT_TYPES:
+            sns.countplot(data=df, x=col)
+            plt.title(f"Count distribution of {col}")
+            plt.xticks(rotation=45)
+            
+        elif schema[col] in NUMERIC_TYPES:
+            sns.histplot(data=df, x=col, kde=True, color="blue")
+            plt.title(f"Data distribution of {col}")
+
+    elif len(cols) == 2:
+        c1, c2 = cols[0], cols[1]
+        t1, t2 = schema[c1], schema[c2]
+        
+        if t1 in NUMERIC_TYPES and t2 in NUMERIC_TYPES:
+            sns.scatterplot(data=df, x=c1, y=c2, alpha=0.6)
+            plt.title(f"Correlation between {c1} and {c2}")
+            
+        elif t1 in CAT_TYPES and t2 in NUMERIC_TYPES:
+            sns.boxplot(data=df, x=c1, y=c2)
+            plt.title(f"Distribution of {c2} across {c1}")
+            
+        elif t1 in NUMERIC_TYPES and t2 in CAT_TYPES:
+            sns.boxplot(data=df, x=c2, y=c1)
+            plt.title(f"Distribution of {c1} across {c2}")
+
+    elif len(cols) == 3:
+        num_cols = [c for c in cols if schema[c] in NUMERIC_TYPES]
+        cat_cols = [c for c in cols if schema[c] in CAT_TYPES]
+        
+        if len(num_cols) == 2 and len(cat_cols) == 1:
+            sns.scatterplot(data=df, x=num_cols[0], y=num_cols[1], hue=cat_cols[0])
+            plt.title(f"Correlation between {num_cols[0]} and {num_cols[1]}, grouped by {cat_cols[0]}")
+            
+        elif len(num_cols) == 3:
+            sns.scatterplot(data=df, x=num_cols[0], y=num_cols[1], size=num_cols[2], sizes=(20, 400), alpha=0.5)
+            plt.title(f"Bubble chart: X={num_cols[0]}, Y={num_cols[1]}, Size={num_cols[2]}")
+
+    plt.tight_layout()
+    file_name = "eda_output.png"
+    plt.savefig(file_name)
+    plt.close()
+    
+    return f"Graph successfully drawn and saved at {file_name}"
+    
+eda_tools = [profile_dataset, univariate_analyst_numeric, univariate_analyst_cat, draw_graph]
 eda_llm = llm.bind_tools(tools=eda_tools)
 eda_tools_dict = {eda_tool.name: eda_tool for eda_tool in eda_tools}
+
+def eda_agent_node(state: AgentState):
+    response = eda_llm.invoke(state["messages"])
+    return {"messages": [response]}
+
+def propose_insight_node(state:AgentState) -> AgentState:
+    structured_llm = llm.with_structured_output(EDAInsight)
+    action = structured_llm.invoke(state["messages"])
+    return {"cleaning_action": action}    
 
 def take_action_eda(state:AgentState) -> AgentState:
     tool_calls = state['messages'][-1].tool_calls
@@ -212,7 +309,7 @@ def take_action_eda(state:AgentState) -> AgentState:
             result = "Incorrect Tool Name, Please Retry and Select tool from List of Available tools."
         
         else:
-            result = eda_tools_dict[t['name']].invoke(t['args'].get('query', ''))
+            result = eda_tools_dict[t['name']].invoke(t['args'])
             print(f"Result length: {len(str(result))}")
             
         results.append(ToolMessage(tool_call_id=t['id'], name=t['name'], content=str(result)))
@@ -226,20 +323,18 @@ def route_tool_or_finish(state) -> Literal["eda_tools", END]: #type:ignore
         return "eda_tools"
     return END
 
-def eda_agent_node(state: AgentState):
-    response = eda_llm.invoke(state["messages"])
-    return {"messages": [response]}
-
 eda_graph = StateGraph(AgentState)
 eda_graph.add_node('eda_agent', eda_agent_node)
 eda_graph.add_node('eda_tools', take_action_eda)
+eda_graph.add_node('propose_insight', propose_insight_node)
 
 eda_graph.add_edge(START, "eda_agent")
 eda_graph.add_conditional_edges(
     "eda_agent",
     route_tool_or_finish,
-    {"eda_tools": "eda_tools", END: END},
+    {"eda_tools": "eda_tools", "propose_insight": 'propose_insight'},
 )
+eda_graph.add_edge("propose_insight", END)
 eda_graph.add_edge("eda_tools", "eda_agent")
 
 eda = eda_graph.compile()

@@ -3,7 +3,6 @@ import os
 from langgraph.graph import StateGraph, START, END
 from typing import Annotated, Sequence, List, Optional, TypedDict, Literal
 from langchain_core.messages import BaseMessage, SystemMessage, HumanMessage, ToolMessage
-from operator import add as add_messages
 from langchain_huggingface import HuggingFaceEndpoint, ChatHuggingFace, HuggingFaceEmbeddings
 from langchain_chroma import Chroma
 from langchain_core.tools import tool, StructuredTool
@@ -11,10 +10,10 @@ from langgraph.prebuilt import ToolNode, tools_condition
 import polars as pl
 from langgraph.types import interrupt, Command
 
-from AgentState import AgentState
-from eda import eda
-from cleaning import cleaning
-from feature import feature_engineering
+from BT_Thuc_Tap.Class.AgentState import AgentState
+from BT_Thuc_Tap.Subgraph.eda import eda
+from BT_Thuc_Tap.Subgraph.cleaning import cleaning
+from BT_Thuc_Tap.Subgraph.feature import feature_engineering
 
 load_dotenv()
 
@@ -103,14 +102,28 @@ class RouteDecision(TypedDict):
     reason: str 
 
 SUPERVISOR_PROMPT = """
-    You are the Supervisor coordinating 1 data analysis pipeline consisting of workers: 
-    - Cleaning: binning/encoding processing, data cleaning 
-    - EDA: Univariate Analysis, Multivariate, Charting 
-    - feature_engineering: feature transformation, feature creation/selection 
-    Based on the dataset metadata and completed steps, select the next worker. 
-    If all the necessary steps have been completed , returns FINISH to return to the user. 
-    Do not repeat 1 step that is already in the completed_steps unless the user asks to do it again.
+    You are the Supervisor coordinating a data analysis pipeline with the following workers:
+    - Cleaning: Handles binning, encoding processing, and general data cleaning.
+    - EDA: Handles Univariate Analysis, Multivariate Analysis, and Charting.
+    - feature_engineering: Handles feature transformation, creation, and selection.
+
+    Your primary directive is to respect the user's explicit intent:
+
+    1. Check User Intent First: 
+    - If the user's latest request was only to "extract metadata" (or inspect the dataset) 
+    and they did NOT explicitly ask to clean, analyze, or engineer features yet, return "FINISH" immediately. 
+    Do not trigger any workers.
+    - Only delegate to a worker if the user has explicitly requested a task that falls under their description.
+
+    2. Wait for Confirmation:
+    - Stop and return "FINISH" after a worker completes its task to allow the user to review the output and give confirmation.
+
+    3. Avoid Repetition:
+    - Do not repeat a step that is already in the completed steps list unless the user explicitly asks to run it again.
+
+    If no further actions are requested or required by the user's prompt, return "FINISH".
 """
+
 def supervisor_node(state: AgentState) -> Command[Literal["cleaning", "eda", "feature_engineering", END]]: #type:ignore
     llm_router = llm.with_structured_output(RouteDecision)
 
@@ -151,10 +164,9 @@ graph.add_edge('feature_engineering', 'supervisor')
 
 app = graph.compile()
 
-# img = app.get_graph().draw_mermaid_png()
-# with open('graph_image.png', 'wb') as f:
-#     f.write(img)
-
+img = app.get_graph().draw_mermaid_png()
+with open('graph_image.png', 'wb') as f:
+    f.write(img)
 
 user_input = input("Enter: ")
 while user_input.lower() != 'exit':
