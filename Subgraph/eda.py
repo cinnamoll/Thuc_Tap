@@ -1,19 +1,15 @@
 from dotenv import load_dotenv
 from langgraph.graph import StateGraph, START, END
-from typing import Annotated, Sequence, List, Optional, TypedDict, Literal
+from typing import List, Optional, Literal
 from langchain_core.messages import BaseMessage, SystemMessage, HumanMessage, ToolMessage
 from operator import add as add_messages
-from langchain_huggingface import HuggingFaceEndpoint, ChatHuggingFace, HuggingFaceEmbeddings
+from langchain_huggingface import HuggingFaceEndpoint, ChatHuggingFace
 from langchain_chroma import Chroma
-from langchain_core.tools import tool, StructuredTool
-from langgraph.prebuilt import ToolNode, tools_condition
+from langchain_core.tools import tool
 import polars as pl
-from langgraph.types import interrupt, Command
-from langchain_core.language_models.chat_models import BaseChatModel
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel
 import matplotlib.pyplot as plt
 import seaborn as sns
-from enum import Enum
 
 from BT_Thuc_Tap.Class.AgentState import AgentState
 
@@ -141,7 +137,7 @@ def univariate_analyst_numeric(file_path: str, column: str) -> str:
 def univariate_analyst_cat(file_path: str, column: str) -> str:
     """
     Apply this tool only to nominal data columns to extract statistical analysis containing:
-        - Unique column values, mode and count of distinct categories in our variable
+        - Unique column values, mode, count of distinct categories, count of null values in our variable
         - Generate a frequency table, containing 6 columns [Column_value, Value_count, Frequency, Percentage]
         divided into 2 parts of Valid values and Missing Values
 
@@ -293,10 +289,24 @@ def eda_agent_node(state: AgentState):
     response = eda_llm.invoke(state["messages"])
     return {"messages": [response]}
 
+
 def propose_insight_node(state:AgentState) -> AgentState:
-    structured_llm = llm.with_structured_output(EDAInsight)
-    action = structured_llm.invoke(state["messages"])
-    return {"cleaning_action": action}    
+    messages = state['messages']
+    system_prompt = SystemMessage(
+        content="""
+        You are an Exploratory Data Analysis (EDA) INSIGHT agent. You do NOT execute any data transformation or cleaning actions.
+        
+        Required procedure:
+        1. Always call the profiling or univariate tools first to understand the dataset's schema, 
+        distributions, and basic statistics.
+        2. Analyze the data to extract the required statistics on the stated column.
+        3. Once you have gathered sufficient insights, stop calling tools. Summarize your key findings 
+        in plain text and suggest the most impactful visualizations (e.g., count distributions, correlations, box plots) 
+        to represent these insights.
+        """
+    )
+    response = eda_llm.invoke([system_prompt] + messages)
+    return {'messages': [response]}   
 
 def take_action_eda(state:AgentState) -> AgentState:
     tool_calls = state['messages'][-1].tool_calls
@@ -317,11 +327,11 @@ def take_action_eda(state:AgentState) -> AgentState:
     print("Tools Execution Complete. Back to the supervisor!")
     return {'messages': results}
 
-def route_tool_or_finish(state) -> Literal["eda_tools", END]: #type:ignore
+def route_tool_or_finish(state) -> Literal["eda_tools", 'propose_insight']: #type:ignore
     last_msg = state["messages"][-1]
     if getattr(last_msg, "tool_calls", None):
         return "eda_tools"
-    return END
+    return 'propose_insight'
 
 eda_graph = StateGraph(AgentState)
 eda_graph.add_node('eda_agent', eda_agent_node)

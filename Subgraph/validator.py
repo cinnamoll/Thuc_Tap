@@ -17,11 +17,6 @@ from BT_Thuc_Tap.Class.AgentState import AgentState
 from cleaning import CleaningAction, CleaningActionType
 from eda import EDAInsight
 
-def route_after_propose(state):
-    if isinstance(state.get("pending_output"), EDAInsight):
-        return "validator" 
-    return "compute_impact"  
-
 def compute_impact(action: CleaningAction, profile: dict) -> CleaningAction:
     stats = profile["stats"]
     total_rows = profile.get("n_rows") 
@@ -37,11 +32,13 @@ def compute_impact(action: CleaningAction, profile: dict) -> CleaningAction:
     action.rows_affected_pct = affected / total_rows if total_rows else 0.0
     return action
 
-def risk_node():
+def risk_node(action: CleaningAction):
     pass
 
 def validator_node():
     pass
 
-
-
+def route_after_propose(state):
+    if isinstance(state.get("pending_output"), EDAInsight):
+        return "validator" 
+    return "compute_impact"  

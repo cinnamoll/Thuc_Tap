@@ -1,11 +1,10 @@
 from dotenv import load_dotenv
 import os
 from langgraph.graph import StateGraph, START, END
-from typing import Annotated, Sequence, List, Optional, TypedDict, Literal
-from langchain_core.messages import BaseMessage, SystemMessage, HumanMessage, ToolMessage
-from langchain_huggingface import HuggingFaceEndpoint, ChatHuggingFace, HuggingFaceEmbeddings
-from langchain_chroma import Chroma
-from langchain_core.tools import tool, StructuredTool
+from typing import List, TypedDict, Literal
+from langchain_core.messages import BaseMessage, SystemMessage, HumanMessage
+from langchain_huggingface import HuggingFaceEndpoint, ChatHuggingFace
+from langchain_core.tools import tool
 from langgraph.prebuilt import ToolNode, tools_condition
 import polars as pl
 from langgraph.types import interrupt, Command
