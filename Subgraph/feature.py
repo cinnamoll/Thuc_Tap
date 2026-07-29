@@ -35,39 +35,11 @@ class BinningType(str, Enum):
     STANDARD = "standardize"
 
 class EngineeringAction(BaseAction):
-    column: str
     actionType: EncodingType | BinningType
     n_bin: int=10,
 
-@tool
-def profile_dataset(file_path: str, file_format:str) -> dict:
-    """
-    Scan a dataset (lazy, not loading the entire dataset into RAM) and return statistics:
-    dtypes, number of nulls for both numerical and categorical columns and unique values for categorical column.
-    Used to detect problems before suggesting cleaning.
-    """
-    lf = pl.scan_file(file_path, file_format)
-    schema = lf.collect_schema()
-    stats = lf.select([
-        pl.all().null_count().name.suffix("_nulls"),
-        pl.all().n_unique().name.suffix("_nunique"),
-    ]).collect(streaming=True)
-
-    return {
-        "columns": list(schema.names()),
-        "dtypes": {k: str(v) for k, v in schema.items()},
-        "stats": stats.to_dicts()[0],
-        "n_rows": lf.select(pl.len()).collect().item()
-    }
-
 @tool 
-def preview_encoding_tool(
-    file_path: str,  
-    file_format: str,
-    column: str, 
-    encode: EncodingType,
-    length: int=20,
-) -> str:
+def preview_encoding_tool(file_path: str, file_format: str, column: str, encode: EncodingType, length: int=20) -> str:
     """
     Apply this tool only to categorical data columns to encoding:
     Args:
@@ -122,14 +94,7 @@ def preview_encoding_tool(
     return res
 
 @tool
-def preview_binning_standard_tool(
-    file_path: str,  
-    file_format: str,
-    column: str, 
-    encode: BinningType,
-    n_bin: int=10,
-    length: int=20,
-) -> str:
+def preview_binning_standard_tool(file_path: str, file_format: str, column: str, encode: BinningType, n_bin: int=10, length: int=20,) -> str:
     """
     Apply this tool only to continuos data columns to binned / standardized:
         - Use result from univariate_analyst_ as input to suggest encoding plans
@@ -195,7 +160,7 @@ def preview_binning_standard_tool(
     return res
     
 
-feature_tools = [profile_dataset, preview_encoding_tool, preview_binning_standard_tool]
+feature_tools = [preview_encoding_tool, preview_binning_standard_tool]
 feature_llm = llm.bind_tools(tools=feature_tools)
 feature_tools_dict = {feature_tool.name: feature_tool for feature_tool in feature_tools}
 
@@ -205,11 +170,10 @@ def feature_agent_node(state: AgentState):
         content="""
         You are a data feature engineering INVESTIGATION agent. You do NOT execute any cleaning action.
         Required procedure:
-        1. Always call profile_dataset first to understand the dataset's problems.
-        2. Call encoding tool for categorical column and preview column(s) head after encoded 
-        3. Call standardization tool FIRST then binning tool for numerical column and preview column(s) head 
+        1. Call encoding tool for categorical column and preview column(s) head after encoded 
+        2. Call standardization and binning tool for numerical column and preview column(s) head 
         after standardized / binned 
-        4. Once you have enough information, stop calling tools and summarize your findings
+        3. Once you have enough information, stop calling tools and summarize your findings
         and recommended action in plain text — a separate step will convert this into
         a structured action.
         """

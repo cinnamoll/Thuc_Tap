@@ -7,6 +7,7 @@ from langchain_huggingface import HuggingFaceEndpoint, ChatHuggingFace
 from langchain_core.tools import tool
 import polars as pl
 from pydantic import BaseModel, Field, field_validator
+from langgraph.types import Command
 
 from BT_Thuc_Tap.Class.AgentState import AgentState
 from BT_Thuc_Tap.Class.BaseClass import BaseAction
@@ -28,7 +29,6 @@ class CleaningActionType(str, Enum):
     DROP_COLUMN = "drop_column"
 
 class CleaningAction(BaseAction):
-    column: str
     actionType: CleaningActionType
     target_dtype: str
 
@@ -53,17 +53,18 @@ def profile_dataset(file_path: str, file_format:str) -> dict:
         pl.all().n_unique().name.suffix("_nunique"),
     ]).collect(streaming=True)
 
-    return {
+    res = {
         "columns": list(schema.names()),
         "dtypes": {k: str(v) for k, v in schema.items()},
         "stats": stats.to_dicts()[0],
         "n_rows": lf.select(pl.len()).collect().item()
     }
 
+    return Command(update={"dataset_profile":res})
+
 cleaning_tools = [profile_dataset]
 cleaning_llm = llm.bind_tools(cleaning_tools)
 cleaning_tools_dict = {cleaning_tool.name: cleaning_tool for cleaning_tool in cleaning_tools}
-
 
 def data_cleaning_node(state:AgentState):
     messages = state['messages']

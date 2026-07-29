@@ -8,9 +8,17 @@ class AgentState(TypedDict):
     metadata: Optional[List[str]]
     file_path: str
     file_format: str
+    dataset_profile: Optional[dict]
+    univariate = Optional[dict]
+    
     current_step: Optional[str]
     next_step: Optional[str]
     completed_steps: Optional[List[str]]
-    retry_count: Optional[int]
-    fallback_used: Optional[bool]
-    requires_approval: Optional[bool]
+    
+    risk_level: Optional[str]
+    pending_action: Optional[dict]
+    computed_impact: Optional[float]
+    validation: Optional[bool]
+    retry_count: int = 0
+    action_status: Optional[bool]    
+    fallback_used: bool = False

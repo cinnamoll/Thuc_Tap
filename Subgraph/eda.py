@@ -2,7 +2,6 @@ from dotenv import load_dotenv
 from langgraph.graph import StateGraph, START, END
 from typing import List, Optional, Literal
 from langchain_core.messages import BaseMessage, SystemMessage, HumanMessage, ToolMessage
-from operator import add as add_messages
 from langchain_huggingface import HuggingFaceEndpoint, ChatHuggingFace
 from langchain_chroma import Chroma
 from langchain_core.tools import tool
@@ -10,6 +9,7 @@ import polars as pl
 from pydantic import BaseModel
 import matplotlib.pyplot as plt
 import seaborn as sns
+from langgraph.types import Command
 
 from BT_Thuc_Tap.Class.AgentState import AgentState
 
@@ -29,27 +29,6 @@ class EDAInsight(BaseModel):
     confidence_note: Optional[str] = None
 
 @tool
-def profile_dataset(file_path: str, file_format:str) -> dict:
-    """
-    Scan a dataset (lazy, not loading the entire dataset into RAM) and return statistics:
-    dtypes, number of nulls for both numerical and categorical columns and unique values for categorical column.
-    Used to detect problems before suggesting cleaning.
-    """
-    lf = pl.scan_file(file_path, file_format)
-    schema = lf.collect_schema()
-    stats = lf.select([
-        pl.all().null_count().name.suffix("_nulls"),
-        pl.all().n_unique().name.suffix("_nunique"),
-    ]).collect(streaming=True)
-
-    return {
-        "columns": list(schema.names()),
-        "dtypes": {k: str(v) for k, v in schema.items()},
-        "stats": stats.to_dicts()[0],
-        "n_rows": lf.select(pl.len()).collect().item()
-    }
-
-@tool
 def univariate_analyst_numeric(file_path: str, column: str) -> str:
     """
     Apply this tool only to numeric data columns to extract statistical analysis containing:
@@ -62,7 +41,7 @@ def univariate_analyst_numeric(file_path: str, column: str) -> str:
         column (str): name of the numeric column to analyze
 
     Returns:
-        A text summary of the statistical analysis for the given column.
+        Update the univariate field in AgentState with the dictionary containing value required
     """
     lf = pl.scan_csv(file_path)
     schema = lf.collect_schema()
@@ -112,26 +91,28 @@ def univariate_analyst_numeric(file_path: str, column: str) -> str:
 
     range_val = stats["max"] - stats["min"]
     
-    res = f"""
-        Univariate analysis on {column}
-        Valid value: {stats['count']} (null: {stats['null_count']})
-        Central tendency: 
-            - Mean:   {stats['mean']:.4f}
-            - Median: {stats['median']:.4f}
-        
-        Dispersion:
-            - Range:    {range_val:.4f} (min={stats['min']:.4f}, max={stats['max']:.4f})
-            - Variance: {stats['variance']:.4f}
-            - Std Dev:  {stats['std']:.4f}
-            - IQR:      {iqr:.4f} (Q1={q1:.4f}, Q3={q3:.4f})
-        
-        Distribution shape:
-            - Skewness: {skew:.4f} → {skew_desc}
-            - Outliers (IQR method, outside [{lower_bound:.4f}, {upper_bound:.4f}]): {outlier_count} values
+    res = {
+        "column": column,
+        "valid_values": stats['count'],
+        "null_values": stats['null_count'],
+        "mean": round(stats['mean'], 4),
+        "median": round(stats['median'], 4),
+        "range": round(range_val, 4),
+        "min": round(stats['min'], 4),
+        "max": round(stats['max'], 4),
+        "variance": round(stats['variance'], 4),
+        "std_dev": round(stats['std'], 4),
+        "iqr": round(iqr, 4),
+        "q1": round(q1, 4),
+        "q3": round(q3, 4),
+        "skewness": round(skew, 4),
+        "skewness_description": skew_desc,
+        "outliers_count": outlier_count,
+        "lower_bound": round(lower_bound, 4),
+        "upper_bound": round(upper_bound, 4)
+    }
     
-    """
-    return res.strip()
-    
+    return Command(update={"univariate":res})
     
 @tool
 def univariate_analyst_cat(file_path: str, column: str) -> str:
@@ -146,7 +127,7 @@ def univariate_analyst_cat(file_path: str, column: str) -> str:
         column (str): name of the nominal column to analyze
 
     Returns:
-        A text summary of the statistical analysis for the given column.
+        Update the univariate field in AgentState with the dictionary containing value required
     """
     lf = pl.scan_csv(file_path)
     schema = lf.collect_schema()
@@ -157,6 +138,8 @@ def univariate_analyst_cat(file_path: str, column: str) -> str:
     dtype = schema[column]
     if dtype not in (pl.Categorical, pl.String) and not isinstance(dtype, pl.Enum):
         return f"'{column}' is not a nominal/categorical type (dtype={dtype}). Use a numeric analysis tool instead."
+    
+    df = lf.select(pl.col(column)).collect()
     
     stats = lf.select([
         pl.col(column).drop_nulls().mode().implode().alias("mode"),
@@ -172,8 +155,6 @@ def univariate_analyst_cat(file_path: str, column: str) -> str:
     null_count = stats.get_column("null_count").item()
     total_count = stats.get_column("total_count").item()
 
-    df = lf.select(pl.col(column)).collect()
-
     freq_table = (
         df.group_by(column)
         .agg(pl.len().alias("Value_count"))
@@ -186,31 +167,26 @@ def univariate_analyst_cat(file_path: str, column: str) -> str:
     )
 
     valid_df = freq_table.filter(pl.col("Column_value").is_not_null())
-    missing_df = freq_table.filter(pl.col("Column_value").is_null())
+    null_df = freq_table.filter(pl.col("Column_value").is_null())
 
     with pl.Config(tbl_rows=valid_df.height if valid_df.height > 0 else 1, tbl_cols=4):
         valid_str = str(valid_df) if not valid_df.is_empty() else "No valid data found."
         
-    with pl.Config(tbl_rows=missing_df.height if missing_df.height > 0 else 1, tbl_cols=4):
-        missing_str = str(missing_df) if not missing_df.is_empty() else "No missing values."
+    with pl.Config(tbl_rows=null_df.height if null_df.height > 0 else 1, tbl_cols=4):
+        null_str = str(null_df) if not null_df.is_empty() else "No missing values."
 
     mode_str = ', '.join(map(str, modes)) if modes else "None"
-
-    res = f"""
-        Univariate analysis on {column}
-        Valid value: {valid_count} (null: {null_count})
-        Central tendency: 
-            - Mode:                {mode_str}
-            - Distinct Categories: {n_unique}
-        
-        Distribution (Valid Values):
-        {valid_str}
-        
-        Missing Values Analysis:
-        {missing_str}
-    """
     
-    return res
+    res = {
+        "valid_count": valid_count,
+        "valid_values": valid_str,
+        "null_count": null_count,
+        "null_values": null_str,
+        "n_unique": n_unique,
+        "mode": mode_str
+    }
+    
+    return Command(update={"univariate": res})
  
 @tool
 def draw_graph(cols: List[str], file_path: str) -> str:
@@ -281,7 +257,7 @@ def draw_graph(cols: List[str], file_path: str) -> str:
     
     return f"Graph successfully drawn and saved at {file_name}"
     
-eda_tools = [profile_dataset, univariate_analyst_numeric, univariate_analyst_cat, draw_graph]
+eda_tools = [univariate_analyst_numeric, univariate_analyst_cat, draw_graph]
 eda_llm = llm.bind_tools(tools=eda_tools)
 eda_tools_dict = {eda_tool.name: eda_tool for eda_tool in eda_tools}
 
@@ -327,7 +303,7 @@ def take_action_eda(state:AgentState) -> AgentState:
     print("Tools Execution Complete. Back to the supervisor!")
     return {'messages': results}
 
-def route_tool_or_finish(state) -> Literal["eda_tools", 'propose_insight']: #type:ignore
+def route_tool_or_finish(state) -> Literal["eda_tools", 'propose_insight']:
     last_msg = state["messages"][-1]
     if getattr(last_msg, "tool_calls", None):
         return "eda_tools"

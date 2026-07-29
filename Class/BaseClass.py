@@ -4,9 +4,10 @@ from typing import Optional, Literal
 class BaseAction(BaseModel):
     file_path: str
     file_format: str
-    output_path: str
+    # output_path: str
     reason: str
+    column: str
 
     rows_affected: Optional[int] = None
-    rows_affected_pct: Optional[float] = None
+    rows_ratio: Optional[float] = None
     risk_level: Optional[Literal["low", "medium", "high"]] = None
