@@ -9,8 +9,8 @@ import polars as pl
 from pydantic import BaseModel, Field, field_validator
 from langgraph.types import Command
 
-from BT_Thuc_Tap.Class.AgentState import AgentState
-from BT_Thuc_Tap.Class.BaseClass import BaseAction
+from Class.AgentState import AgentState
+from Class.BaseClass import BaseAction
 
 load_dotenv()
 
@@ -46,12 +46,22 @@ def profile_dataset(file_path: str, file_format:str) -> dict:
     dtypes, number of nulls for both numerical and categorical columns and unique values for categorical column.
     Used to detect problems before suggesting cleaning.
     """
-    lf = pl.scan_file(file_path, file_format)
+    if file_format == "csv":
+        lf = pl.scan_csv(file_path)
+    elif file_format == "parquet":
+        lf = pl.scan_parquet(file_path)
+    elif file_format in ["ipc", "arrow", "feather"]:
+        lf = pl.scan_ipc(file_path)
+    elif file_format in ["json", "ndjson"]:
+        lf = pl.scan_ndjson(file_path)
+    else:
+        raise ValueError(f"Don't support {file_format}")
+    
     schema = lf.collect_schema()
     stats = lf.select([
         pl.all().null_count().name.suffix("_nulls"),
         pl.all().n_unique().name.suffix("_nunique"),
-    ]).collect(streaming=True)
+    ]).collect(engine='streaming')
 
     res = {
         "columns": list(schema.names()),
@@ -87,7 +97,7 @@ def propose_action_node(state: AgentState) -> AgentState:
     action = structured_llm.invoke(state["messages"])
     return {"cleaning_action": action}
 
-def route_tool_or_finish(state) -> Literal["cleaning_tools", "propose_action"]: #type:ignore
+def route_tool_or_finish(state) -> Literal["cleaning_tools", "propose_action"]: 
     last_msg = state["messages"][-1]
     if getattr(last_msg, "tool_calls", None):
         return "cleaning_tools"
