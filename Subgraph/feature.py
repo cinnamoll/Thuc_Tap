@@ -6,14 +6,12 @@ from operator import add as add_messages
 from langchain_huggingface import HuggingFaceEndpoint, ChatHuggingFace
 from langchain_core.tools import tool, StructuredTool
 import polars as pl
-from langchain_core.language_models.chat_models import BaseChatModel
-from pydantic import BaseModel, Field, field_validator
 from enum import Enum
 from langgraph.types import interrupt, Command
 
 
-from BT_Thuc_Tap.Class.AgentState import AgentState
-from BT_Thuc_Tap.Class.BaseClass import BaseAction
+from Class.AgentState import AgentState
+from Class.BaseClass import BaseAction
 
 load_dotenv()
 
@@ -38,6 +36,17 @@ class EngineeringAction(BaseAction):
     actionType: EncodingType | BinningType
     n_bin: int=10,
 
+def get_lf(file_path: str, file_format: str):
+    if file_format == "csv":
+        lf = pl.scan_csv(file_path)
+    elif file_format == "parquet":
+        lf = pl.scan_parquet(file_path)
+    elif file_format == "json":
+        lf = pl.scan_ndjson(file_path)
+    else:
+        raise ValueError(f"Don't support {file_format}")
+    return lf
+
 @tool 
 def preview_encoding_tool(file_path: str, file_format: str, column: str, encode: EncodingType, length: int=20) -> str:
     """
@@ -52,7 +61,7 @@ def preview_encoding_tool(file_path: str, file_format: str, column: str, encode:
         - new Encoded column head
     """
     
-    lf = pl.scan_file(file_path, file_format)
+    lf = get_lf(file_path, file_format)
     schema = lf.collect_schema()
 
     if column not in schema.names():
@@ -110,7 +119,7 @@ def preview_binning_standard_tool(file_path: str, file_format: str, column: str,
         - A new Binned column head
     """
     
-    lf = pl.scan_file(file_path, file_format)
+    lf = get_lf(file_path, file_format)
     schema = lf.collect_schema()
 
     if column not in schema.names():
@@ -127,9 +136,7 @@ def preview_binning_standard_tool(file_path: str, file_format: str, column: str,
         mean = df[column].mean()
         std = df[column].std()
         if std is not None and std > 0:
-            new_df = df.with_columns(
-                ((pl.col(column) - mean) / std).alias(f"{column}_std")
-            )
+            new_df = df.with_columns(((pl.col(column) - mean) / std).alias(f"{column}_std"))
         else:
             return "Std is None. No binning with this column"
     elif encode == 'equal_width':
@@ -139,9 +146,7 @@ def preview_binning_standard_tool(file_path: str, file_format: str, column: str,
         step = (max_val - min_val) / n_bin
         breaks = [min_val + i * step for i in range(1, n_bin)]
         
-        new_df = df.with_columns(
-            pl.col(column).cut(breaks).alias(f"{column}_binned")
-        )
+        new_df = df.with_columns(pl.col(column).cut(breaks).alias(f"{column}_binned"))
     elif encode == 'quantile':
         new_df = df.with_columns(
                 pl.col(column)
@@ -224,3 +229,7 @@ feature_graph.add_edge('propose_action', END)
 feature_graph.add_edge("feature_tools", "feature_agent")
 
 feature_engineering = feature_graph.compile()
+
+img = feature_engineering.get_graph().draw_mermaid_png()
+with open('Subgraph_Img/feature_image.png', 'wb') as f:
+    f.write(img)

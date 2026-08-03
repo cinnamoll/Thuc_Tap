@@ -11,7 +11,7 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 from langgraph.types import Command
 
-from BT_Thuc_Tap.Class.AgentState import AgentState
+from Class.AgentState import AgentState
 
 load_dotenv()
 
@@ -28,8 +28,19 @@ class EDAInsight(BaseModel):
     chart_path: Optional[str] = None
     confidence_note: Optional[str] = None
 
+def get_lf(file_path: str, file_format: str):
+    if file_format == "csv":
+        lf = pl.scan_csv(file_path)
+    elif file_format == "parquet":
+        lf = pl.scan_parquet(file_path)
+    elif file_format == "json":
+        lf = pl.scan_ndjson(file_path)
+    else:
+        raise ValueError(f"Don't support {file_format}")
+    return lf
+
 @tool
-def univariate_analyst_numeric(file_path: str, column: str) -> str:
+def univariate_analyst_numeric(file_path: str, file_format:str, column: str) -> str:
     """
     Apply this tool only to numeric data columns to extract statistical analysis containing:
         - Measures central tendency (mean, median) to find the typical value.
@@ -43,7 +54,7 @@ def univariate_analyst_numeric(file_path: str, column: str) -> str:
     Returns:
         Update the univariate field in AgentState with the dictionary containing value required
     """
-    lf = pl.scan_csv(file_path)
+    lf = get_lf(file_path, file_format)
     schema = lf.collect_schema()
 
     if column not in schema.names():
@@ -115,7 +126,7 @@ def univariate_analyst_numeric(file_path: str, column: str) -> str:
     return Command(update={"univariate":res})
     
 @tool
-def univariate_analyst_cat(file_path: str, column: str) -> str:
+def univariate_analyst_cat(file_path: str, file_format:str, column: str) -> str:
     """
     Apply this tool only to nominal data columns to extract statistical analysis containing:
         - Unique column values, mode, count of distinct categories, count of null values in our variable
@@ -129,7 +140,7 @@ def univariate_analyst_cat(file_path: str, column: str) -> str:
     Returns:
         Update the univariate field in AgentState with the dictionary containing value required
     """
-    lf = pl.scan_csv(file_path)
+    lf = get_lf(file_path, file_format)
     schema = lf.collect_schema()
 
     if column not in schema.names():
@@ -189,7 +200,7 @@ def univariate_analyst_cat(file_path: str, column: str) -> str:
     return Command(update={"univariate": res})
  
 @tool
-def draw_graph(cols: List[str], file_path: str) -> str:
+def draw_graph(file_path: str, file_format: str, cols: List[str]) -> str:
     """
     Apply this tool to draw graph for user using columns name and dataset file_path.
 
@@ -199,7 +210,7 @@ def draw_graph(cols: List[str], file_path: str) -> str:
         file_path (str): dataset file path
 
     """
-    lf = pl.scan_csv(file_path)
+    lf = get_lf(file_path, file_format)
     schema = lf.collect_schema()
     
     NUMERIC_TYPES = (pl.Int8, pl.Int16, pl.Int32, pl.Int64, pl.Float32, pl.Float64, 
@@ -324,3 +335,7 @@ eda_graph.add_edge("propose_insight", END)
 eda_graph.add_edge("eda_tools", "eda_agent")
 
 eda = eda_graph.compile()
+
+img = eda.get_graph().draw_mermaid_png()
+with open('Subgraph_Img/eda_image.png', 'wb') as f:
+    f.write(img)

@@ -1,27 +1,27 @@
-from dotenv import load_dotenv
 from langgraph.graph import StateGraph, START, END
-from typing import Literal, dict
+from typing import Literal, Dict
 from langchain_core.messages import HumanMessage
 from langchain_huggingface import HuggingFaceEndpoint, ChatHuggingFace
 from langchain_core.tools import tool
 from langgraph.types import interrupt
 from pydantic import ValidationError
 
-from BT_Thuc_Tap.Class.AgentState import AgentState
-from cleaning import CleaningAction, CleaningActionType, cleaning_graph
-from eda import EDAInsight
-from feature import EngineeringAction, EncodingType, BinningType, feature_graph
-
-load_dotenv()
-
-hf_endpoint = HuggingFaceEndpoint(
-    repo_id='Qwen/Qwen2.5-7B-Instruct',
-)
-
-llm = ChatHuggingFace(llm=hf_endpoint) 
+from Class.AgentState import AgentState
+from Subgraph.cleaning import CleaningAction, CleaningActionType, cleaning_graph
+from Subgraph.eda import EDAInsight
+from Subgraph.feature import EngineeringAction, EncodingType, BinningType, feature_graph
 
 @tool
-def compute_impact_cleaning(action: CleaningAction, dataset_profile: dict) -> CleaningAction:
+def compute_impact_cleaning(action: CleaningAction, dataset_profile: Dict) -> CleaningAction:
+    """This tool compute risk level of cleaning action in a column
+
+    Args:
+        action (CleaningAction): Provide what type of cleaning action
+        dataset_profile (Dict): metadata about the column
+
+    Returns:
+        CleaningAction: Updated Cleaning action
+    """
     stats = dataset_profile["stats"]
     total_rows = dataset_profile.get("n_rows") 
 
@@ -37,7 +37,16 @@ def compute_impact_cleaning(action: CleaningAction, dataset_profile: dict) -> Cl
     return action
 
 @tool
-def compute_impact_engineering(action: EngineeringAction, dataset_profile: dict) -> EngineeringAction:
+def compute_impact_engineering(action: EngineeringAction, dataset_profile: Dict) -> EngineeringAction:
+    """This tool compute risk level of Encoding or Binning action in a column
+
+    Args:
+        action (CleaningAction): Provide what type of encoding / binning action
+        dataset_profile (Dict): metadata about the column
+
+    Returns:
+        CleaningAction: Updated Engineering action
+    """
     total_rows = dataset_profile.get("n_rows") 
     null_count = dataset_profile["stats"].get(f"{action.column}_nulls", 0)
 
@@ -54,7 +63,7 @@ def compute_impact_engineering(action: EngineeringAction, dataset_profile: dict)
     action.rows_ratio = affected / total_rows if total_rows else 0.0
     return action
 
-def compute_impact_node(state: AgentState) -> dict:
+def compute_impact_node(state: AgentState) -> Dict:
     action = state["pending_action"]
     dataset_profile = state['dataset_profile']
 
@@ -63,10 +72,12 @@ def compute_impact_node(state: AgentState) -> dict:
     else:
         calculated = compute_impact_engineering.invoke(action, dataset_profile)
 
-    return {"computed_impact": {"rows_affected": calculated.rows_affected, "rows_ratio": calculated.rows_ratio}}
+    return {
+        "pending_action": calculated, 
+        "computed_impact": {"rows_affected": calculated.rows_affected, "rows_ratio": calculated.rows_ratio}
+    }
 
-def risk_node(state: AgentState) -> dict:
-    action = state['pending_action']
+def risk_node(state: AgentState) -> Dict:
     pct = state.get("computed_impact", {}).get("rows_ratio", 0.0)
 
     if pct < 0.05:
@@ -78,7 +89,7 @@ def risk_node(state: AgentState) -> dict:
 
     return {"risk_level": risk_level}
 
-def validator_node(state: AgentState) -> dict:
+def validator_node(state: AgentState) -> Dict:
     action = state["pending_action"]
     computed = state.get("computed_impact", {}) 
        
@@ -95,7 +106,7 @@ def validator_node(state: AgentState) -> dict:
 
     return {"validation": True, "validation_error": None}
 
-def repair_node(state: AgentState) -> dict:
+def repair_node(state: AgentState) -> Dict:
     error = state.get("validation_error", "Output has incorrect format or incorrect stats")
     retry_count = state.get("retry_count", 0) + 1
 
@@ -111,7 +122,7 @@ def repair_node(state: AgentState) -> dict:
         "messages": [repair_note],
     }
 
-def human_review_node(state: AgentState) -> dict:
+def human_review_node(state: AgentState) -> Dict:
     action = state["pending_action"]
 
     diff_summary = f"Will drop {action.rows_affected} rows ({action.rows_ratio}) due to {action.reason}"
@@ -201,4 +212,11 @@ validate_graph.add_conditional_edges(
 validate_graph.add_edge("deterministic_fallback", END)
 validate_graph.add_edge("human_review", END)
 
+validate_graph.add_edge("cleaning_graph", "compute_impact")
+validate_graph.add_edge("feature_graph", "compute_impact")
+
 validation_subgraph = validate_graph.compile()
+
+img = validation_subgraph.get_graph().draw_mermaid_png()
+with open('Subgraph_Img/validator_image.png', 'wb') as f:
+    f.write(img)

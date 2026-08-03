@@ -13,6 +13,8 @@ from BT_Thuc_Tap.Class.AgentState import AgentState
 from BT_Thuc_Tap.Subgraph.eda import eda
 from BT_Thuc_Tap.Subgraph.cleaning import cleaning
 from BT_Thuc_Tap.Subgraph.feature import feature_engineering
+from BT_Thuc_Tap.Subgraph.validator import validation_subgraph
+from BT_Thuc_Tap.Subgraph.executor import executor_node
 
 load_dotenv()
 
@@ -160,6 +162,9 @@ graph.add_edge('eda', 'supervisor')
 
 graph.add_node('feature_engineering', feature_engineering)
 graph.add_edge('feature_engineering', 'supervisor')
+
+graph.add_node('validator', validation_subgraph)
+graph.add_node('executor', executor_node)
 
 app = graph.compile()
 

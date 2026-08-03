@@ -50,9 +50,7 @@ def profile_dataset(file_path: str, file_format:str) -> dict:
         lf = pl.scan_csv(file_path)
     elif file_format == "parquet":
         lf = pl.scan_parquet(file_path)
-    elif file_format in ["ipc", "arrow", "feather"]:
-        lf = pl.scan_ipc(file_path)
-    elif file_format in ["json", "ndjson"]:
+    elif file_format == "json":
         lf = pl.scan_ndjson(file_path)
     else:
         raise ValueError(f"Don't support {file_format}")
@@ -135,3 +133,7 @@ cleaning_graph.add_edge("propose_action", END)
 cleaning_graph.add_edge("cleaning_tools", "cleaning_agent")
 
 cleaning = cleaning_graph.compile()
+
+img = cleaning.get_graph().draw_mermaid_png()
+with open('Subgraph_Img/cleaning_image.png', 'wb') as f:
+    f.write(img)
