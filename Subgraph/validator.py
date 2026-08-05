@@ -1,15 +1,14 @@
 from langgraph.graph import StateGraph, START, END
 from typing import Literal, Dict
 from langchain_core.messages import HumanMessage
-from langchain_huggingface import HuggingFaceEndpoint, ChatHuggingFace
 from langchain_core.tools import tool
 from langgraph.types import interrupt
 from pydantic import ValidationError
 
 from Class.AgentState import AgentState
-from Subgraph.cleaning import CleaningAction, CleaningActionType, cleaning_graph
+from Subgraph.cleaning import CleaningAction, CleaningActionType, cleaning_graph, cleaning
 from Subgraph.eda import EDAInsight
-from Subgraph.feature import EngineeringAction, EncodingType, BinningType, feature_graph
+from Subgraph.feature import EngineeringAction, EncodingType, BinningType, feature_graph, feature_engineering
 
 @tool
 def compute_impact_cleaning(action: CleaningAction, dataset_profile: Dict) -> CleaningAction:
@@ -117,10 +116,7 @@ def repair_node(state: AgentState) -> Dict:
             Recheck for correct format and stats to recommend a new action
         """))
 
-    return {
-        "retry_count": retry_count,
-        "messages": [repair_note],
-    }
+    return {"retry_count": retry_count, "messages": [repair_note]}
 
 def human_review_node(state: AgentState) -> Dict:
     action = state["pending_action"]
@@ -181,8 +177,8 @@ validate_graph.add_node("validator", validator_node)
 validate_graph.add_node("repair", repair_node)
 validate_graph.add_node("deterministic_fallback", deterministic_fallback_node)
 validate_graph.add_node("human_review", human_review_node)
-validate_graph.add_node("cleaning_graph", cleaning_graph)
-validate_graph.add_node("feature_graph", feature_graph)
+validate_graph.add_node("cleaning_graph", cleaning) 
+validate_graph.add_node("feature_graph", feature_engineering)
 
 validate_graph.add_edge(START, "compute_impact")
 validate_graph.add_edge("compute_impact", "risk")
@@ -195,7 +191,7 @@ validate_graph.add_conditional_edges(
         "human_review": "human_review",
         "repair": "repair",
         END: END,
-    },
+    }
 )
 
 validate_graph.add_conditional_edges(
@@ -206,7 +202,7 @@ validate_graph.add_conditional_edges(
         "cleaning_graph":"cleaning_graph",
         "feature_graph":"feature_graph",
         END: END,
-    },
+    }
 )
 
 validate_graph.add_edge("deterministic_fallback", END)
@@ -215,8 +211,8 @@ validate_graph.add_edge("human_review", END)
 validate_graph.add_edge("cleaning_graph", "compute_impact")
 validate_graph.add_edge("feature_graph", "compute_impact")
 
-validation_subgraph = validate_graph.compile()
+validation = validate_graph.compile()
 
-img = validation_subgraph.get_graph().draw_mermaid_png()
-with open('Subgraph_Img/validator_image.png', 'wb') as f:
-    f.write(img)
+# img = validation.get_graph().draw_mermaid_png()
+# with open('Subgraph_Img/validator_image.png', 'wb') as f:
+#     f.write(img)

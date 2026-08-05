@@ -103,7 +103,7 @@ def preview_encoding_tool(file_path: str, file_format: str, column: str, encode:
     return res
 
 @tool
-def preview_binning_standard_tool(file_path: str, file_format: str, column: str, encode: BinningType, n_bin: int=10, length: int=20,) -> str:
+def preview_binning_standard_tool(file_path: str, file_format: str, column: str, encode: BinningType, n_bin: int=10, length: int=20) -> str:
     """
     Apply this tool only to continuos data columns to binned / standardized:
         - Use result from univariate_analyst_ as input to suggest encoding plans
@@ -189,7 +189,7 @@ def feature_agent_node(state: AgentState):
 def propose_action_node(state: AgentState) -> AgentState:
     structured_llm = llm.with_structured_output(EngineeringAction)
     action = structured_llm.invoke(state["messages"])
-    return {"feature_action": action}
+    return Command(update={"pending_action": action})
 
 def take_action_feature(state:AgentState) -> AgentState:
     tool_calls = state['messages'][-1].tool_calls
@@ -230,6 +230,6 @@ feature_graph.add_edge("feature_tools", "feature_agent")
 
 feature_engineering = feature_graph.compile()
 
-img = feature_engineering.get_graph().draw_mermaid_png()
-with open('Subgraph_Img/feature_image.png', 'wb') as f:
-    f.write(img)
+# img = feature_engineering.get_graph().draw_mermaid_png()
+# with open('Subgraph_Img/feature_image.png', 'wb') as f:
+#     f.write(img)

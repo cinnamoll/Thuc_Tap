@@ -2,12 +2,6 @@ from typing import Annotated, Sequence, List, Optional, TypedDict, Union, Litera
 from langchain_core.messages import BaseMessage
 from operator import add as add_messages
 
-class ActionRecord(TypedDict):
-    action: str
-    result: str
-    status: Literal["accepted", "rejected"]
-    attempt: int
-
 class AgentState(TypedDict):
     messages: Annotated[Sequence[BaseMessage], add_messages]
     cols: Optional[List[str]]
@@ -27,4 +21,5 @@ class AgentState(TypedDict):
     skip_confirm: Optional[bool]
     
     current_action: Optional[str]
-    completed_actions: Annotated[List[ActionRecord], add_messages]
+    completed_actions: Annotated[Sequence[BaseMessage], add_messages]
+    review_decision: Optional[str]

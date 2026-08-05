@@ -82,9 +82,9 @@ def data_cleaning_node(state:AgentState):
         Required procedure:
         1. Always call profile_dataset first to understand the dataset's problems.
         2. Based on the results, analyze which columns have problems (nulls, wrong dtype, etc).
-        3. Once you have enough information, stop calling tools and summarize your findings
-        and recommended action in plain text — a separate step will convert this into
-        a structured action.
+        3. Once you have enough information, stop calling tools and summarize your findings to 
+        match the format of CleaningAction class and recommended action in plain text 
+        — a separate step will convert this into a structured action.
         """
     )
     response = cleaning_llm.invoke([system_prompt] + messages)
@@ -93,7 +93,7 @@ def data_cleaning_node(state:AgentState):
 def propose_action_node(state: AgentState) -> AgentState:
     structured_llm = llm.with_structured_output(CleaningAction)
     action = structured_llm.invoke(state["messages"])
-    return {"cleaning_action": action}
+    return Command(update={"pending_action": action})
 
 def route_tool_or_finish(state) -> Literal["cleaning_tools", "propose_action"]: 
     last_msg = state["messages"][-1]
@@ -134,6 +134,6 @@ cleaning_graph.add_edge("cleaning_tools", "cleaning_agent")
 
 cleaning = cleaning_graph.compile()
 
-img = cleaning.get_graph().draw_mermaid_png()
-with open('Subgraph_Img/cleaning_image.png', 'wb') as f:
-    f.write(img)
+# img = cleaning.get_graph().draw_mermaid_png()
+# with open('Subgraph_Img/cleaning_image.png', 'wb') as f:
+#     f.write(img)

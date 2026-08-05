@@ -336,6 +336,6 @@ eda_graph.add_edge("eda_tools", "eda_agent")
 
 eda = eda_graph.compile()
 
-img = eda.get_graph().draw_mermaid_png()
-with open('Subgraph_Img/eda_image.png', 'wb') as f:
-    f.write(img)
+# img = eda.get_graph().draw_mermaid_png()
+# with open('Subgraph_Img/eda_image.png', 'wb') as f:
+#     f.write(img)

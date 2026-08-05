@@ -1,12 +1,12 @@
-from typing import Annotated, Sequence, List, Optional, TypedDict, Literal, Union
+from langchain_core.messages import SystemMessage
+from langgraph.graph import StateGraph, START, END
+from typing import Literal
 from langchain_core.tools import tool
 import polars as pl
-from langgraph.types import interrupt, Command
-from langchain_core.language_models.chat_models import BaseChatModel
-from pydantic import BaseModel, Field
+from langgraph.types import interrupt
 import logging
 
-from Class.AgentState import AgentState, ActionRecord
+from Class.AgentState import AgentState
 from cleaning import CleaningAction, CleaningActionType
 from feature import EngineeringAction, EncodingType, BinningType
 
@@ -79,7 +79,7 @@ def encoding_tool(action: EngineeringAction, skip_confirm: bool, output_path:str
     lf = pl.scan_file(action.file_path, action.file_format)
         
     if action.actionType == EncodingType.FREQUENCY:
-        lf = lf.with_columns((pl.len().over(action.column) / pl.count()).alias(f'{action.column}_encoded'))
+        lf = lf.with_columns((pl.len().over(action.column) / pl.len()).alias(f'{action.column}_encoded'))
         encoded_df = lf.collect()
         
     elif action.actionType == EncodingType.LABEL:
@@ -141,6 +141,8 @@ def binning_standardizing_tool(action: EngineeringAction, skip_confirm: bool, ou
             new_df = df.with_columns(
                 ((pl.col(action.column) - mean) / std).alias(f"{action.column}_std")
             )
+        else:
+            raise TypeError(f"{std} is NULL or <0")
     elif action.actionType == BinningType.EQUAL:
         min_val = df.select(pl.col(action.column).min()).item()
         max_val = df.select(pl.col(action.column).max()).item()
@@ -154,7 +156,7 @@ def binning_standardizing_tool(action: EngineeringAction, skip_confirm: bool, ou
     elif action.actionType == BinningType.QUANTILE:
         new_df = df.with_columns(
                 pl.col(action.column)
-                .qcut(df[action.column].bin_count, allow_duplicates=True)
+                .qcut(df[action.column].n_bin, allow_duplicates=True)
                 .alias(f"{action.column}_binned")
             )
         
@@ -163,10 +165,9 @@ def binning_standardizing_tool(action: EngineeringAction, skip_confirm: bool, ou
     
     return f"Use '{action}' on '{action.column}', save at {output_path}. Output head: {sample_str}"
 
-    
 def executor_node(state: AgentState) -> dict:
     action = state["pending_action"]
-    skip_confirm = True if action.skip_level == "low" else False
+    skip_confirm = True if action.risk_level == "low" else False
     fallback_used = False
 
     try:
@@ -178,6 +179,8 @@ def executor_node(state: AgentState) -> dict:
                 result = encoding_tool.invoke({"action": action, "skip_confirm": skip_confirm, "output_path": state['output_path']})
             elif isinstance(action.actionType, BinningType):
                 result = binning_standardizing_tool.invoke({"action": action, "skip_confirm": skip_confirm, "output_path": state['output_path']})
+            else:
+                raise TypeError(f"Unsupported EngineeringAction.actionType: {type(action.actionType).__name__}")
         
         else:
             raise TypeError(f"Unsupported action type for executor: {type(action).__name__}")
@@ -187,15 +190,11 @@ def executor_node(state: AgentState) -> dict:
         result = f"EXECUTION_FAILED: {e}"
         fallback_used = True
     
-    return {
-        "fallback_used": fallback_used,
-        "skip_confirm": skip_confirm,
-        "current_action": result
-    }
+    return {"fallback_used": fallback_used, "skip_confirm": skip_confirm, "action_res": result, 'current_action': action}
     
 def review_execution_node(state: AgentState):
-    action = state["current_action"]
-    result = state['pending_action']
+    action = state['pending_action']
+    result = state["action_res"]
 
     decision = interrupt({
         "type": "review_output",
@@ -209,24 +208,50 @@ def review_execution_node(state: AgentState):
         edited_action = decision.get("new_action") 
         return {
             "review_decision": "retry",
-            "current_action": edited_action or action,
             "pending_action": edited_action or action,
             "retry_count": state.get("retry_count", 0) + 1,
         }
 
     status = "accepted" if choice == "accept" else "rejected"
     
-    record: ActionRecord = {
-        "action": action,
-        "result": result,
-        "status": status,
-        "attempt": state.get("retry_count", 0) + 1,
-    }
+    record = SystemMessage(
+        content=(
+            f"{result}"
+            f"Status: {status}\n"
+            f"Attempt: {state.get('retry_count', 0) + 1}"
+        )
+    )
     
     return {
-        "review_decision": choice,
-        "completed_actions": [record], 
-        "current_action": None,
+        "completed_actions": record,
         "pending_action": None,
         "retry_count": 0,
+        "review_decision": status
     }
+    
+def route_after_review(state:AgentState) -> Literal["executor", "validation", "supervisor"]:
+    if state["review_decision"] != "retry":
+        return "supervisor"
+    if state.get("retry_count", 0) >= 3:
+        return "supervisor"         
+    if state.get("current_action") != state.get("pending_action"):
+        return "validation"         
+    return "executor"    
+
+executor_graph = StateGraph(AgentState)
+executor_graph.add_node("executor", executor_node)
+executor_graph.add_node("review", review_execution_node)
+
+executor_graph.add_edge(START, "executor")
+executor_graph.add_edge("executor", "review")
+executor_graph.add_conditional_edges(
+    "review",
+    route_after_review,
+    {
+        "executor": "executor",
+        "validation": "validation",
+        "supervisor": "supervisor",
+    },
+)
+
+executor = executor_graph.compile()

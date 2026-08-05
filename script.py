@@ -9,12 +9,12 @@ from langgraph.prebuilt import ToolNode, tools_condition
 import polars as pl
 from langgraph.types import interrupt, Command
 
-from BT_Thuc_Tap.Class.AgentState import AgentState
-from BT_Thuc_Tap.Subgraph.eda import eda
-from BT_Thuc_Tap.Subgraph.cleaning import cleaning
-from BT_Thuc_Tap.Subgraph.feature import feature_engineering
-from BT_Thuc_Tap.Subgraph.validator import validation_subgraph
-from BT_Thuc_Tap.Subgraph.executor import executor_node
+from Class.AgentState import AgentState
+from Subgraph.eda import eda
+from Subgraph.cleaning import cleaning
+from Subgraph.feature import feature_engineering
+from Subgraph.validator import validation_subgraph
+from Subgraph.executor import executor_node
 
 load_dotenv()
 
@@ -172,12 +172,12 @@ img = app.get_graph().draw_mermaid_png()
 with open('graph_image.png', 'wb') as f:
     f.write(img)
 
-user_input = input("Enter: ")
-while user_input.lower() != 'exit':
-    for event in app.stream({'messages': [HumanMessage(content=user_input)]}):
-        for node_name, node_state in event.items():
-            print(f"\n--- Output from {node_name} ---")
-            last_message = node_state['messages'][-1]
-            print(last_message.content if last_message.content else "[Tool Call]")
+# user_input = input("Enter: ")
+# while user_input.lower() != 'exit':
+#     for event in app.stream({'messages': [HumanMessage(content=user_input)]}):
+#         for node_name, node_state in event.items():
+#             print(f"\n--- Output from {node_name} ---")
+#             last_message = node_state['messages'][-1]
+#             print(last_message.content if last_message.content else "[Tool Call]")
             
-    user_input = input("Enter: ")
+#     user_input = input("Enter: ")
