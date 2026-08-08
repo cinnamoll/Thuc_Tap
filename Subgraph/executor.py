@@ -1,14 +1,12 @@
 from langchain_core.messages import SystemMessage
-from langgraph.graph import StateGraph, START, END
-from typing import Literal
 from langchain_core.tools import tool
 import polars as pl
 from langgraph.types import interrupt
 import logging
 
 from Class.AgentState import AgentState
-from cleaning import CleaningAction, CleaningActionType
-from feature import EngineeringAction, EncodingType, BinningType
+from Subgraph.cleaning import CleaningAction, CleaningActionType
+from Subgraph.feature import EngineeringAction, EncodingType, BinningType
 
 logger = logging.getLogger(__name__)
 
@@ -228,30 +226,3 @@ def review_execution_node(state: AgentState):
         "retry_count": 0,
         "review_decision": status
     }
-    
-def route_after_review(state:AgentState) -> Literal["executor", "validation", "supervisor"]:
-    if state["review_decision"] != "retry":
-        return "supervisor"
-    if state.get("retry_count", 0) >= 3:
-        return "supervisor"         
-    if state.get("current_action") != state.get("pending_action"):
-        return "validation"         
-    return "executor"    
-
-executor_graph = StateGraph(AgentState)
-executor_graph.add_node("executor", executor_node)
-executor_graph.add_node("review", review_execution_node)
-
-executor_graph.add_edge(START, "executor")
-executor_graph.add_edge("executor", "review")
-executor_graph.add_conditional_edges(
-    "review",
-    route_after_review,
-    {
-        "executor": "executor",
-        "validation": "validation",
-        "supervisor": "supervisor",
-    },
-)
-
-executor = executor_graph.compile()

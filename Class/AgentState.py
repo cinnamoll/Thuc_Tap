@@ -8,6 +8,7 @@ class AgentState(TypedDict):
     metadata: Optional[List[str]]
     file_path: str
     file_format: str
+    run_id:str
     dataset_profile: Optional[dict]
     univariate = Optional[dict]
     
@@ -19,7 +20,10 @@ class AgentState(TypedDict):
     action_status: Optional[bool]    
     fallback_used: Optional[bool] 
     skip_confirm: Optional[bool]
+    action_res: Optional[str]
     
     current_action: Optional[str]
     completed_actions: Annotated[Sequence[BaseMessage], add_messages]
     review_decision: Optional[str]
+    
+    manager_report: Annotated[Sequence[BaseMessage], add_messages]

@@ -6,9 +6,9 @@ from langgraph.types import interrupt
 from pydantic import ValidationError
 
 from Class.AgentState import AgentState
-from Subgraph.cleaning import CleaningAction, CleaningActionType, cleaning_graph, cleaning
+from Subgraph.cleaning import CleaningAction, CleaningActionType, cleaning
 from Subgraph.eda import EDAInsight
-from Subgraph.feature import EngineeringAction, EncodingType, BinningType, feature_graph, feature_engineering
+from Subgraph.feature import EngineeringAction, EncodingType, BinningType, feature_engineering
 
 @tool
 def compute_impact_cleaning(action: CleaningAction, dataset_profile: Dict) -> CleaningAction:

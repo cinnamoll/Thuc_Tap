@@ -1,9 +1,8 @@
 from dotenv import load_dotenv
 from langgraph.graph import StateGraph, START, END
 from typing import List, Optional, Literal
-from langchain_core.messages import BaseMessage, SystemMessage, HumanMessage, ToolMessage
+from langchain_core.messages import SystemMessage, ToolMessage
 from langchain_huggingface import HuggingFaceEndpoint, ChatHuggingFace
-from langchain_chroma import Chroma
 from langchain_core.tools import tool
 import polars as pl
 from pydantic import BaseModel
@@ -329,7 +328,10 @@ eda_graph.add_edge(START, "eda_agent")
 eda_graph.add_conditional_edges(
     "eda_agent",
     route_tool_or_finish,
-    {"eda_tools": "eda_tools", "propose_insight": 'propose_insight'},
+    {
+        "eda_tools": "eda_tools", 
+        "propose_insight": 'propose_insight'
+    }
 )
 eda_graph.add_edge("propose_insight", END)
 eda_graph.add_edge("eda_tools", "eda_agent")

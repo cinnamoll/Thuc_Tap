@@ -1,14 +1,12 @@
 from dotenv import load_dotenv
 from langgraph.graph import StateGraph, START, END
-from typing import Annotated, Sequence, List, Optional, TypedDict, Literal
-from langchain_core.messages import BaseMessage, SystemMessage, HumanMessage, ToolMessage
-from operator import add as add_messages
+from typing import Literal
+from langchain_core.messages import SystemMessage, ToolMessage
 from langchain_huggingface import HuggingFaceEndpoint, ChatHuggingFace
-from langchain_core.tools import tool, StructuredTool
+from langchain_core.tools import tool
 import polars as pl
 from enum import Enum
-from langgraph.types import interrupt, Command
-
+from langgraph.types import Command
 
 from Class.AgentState import AgentState
 from Class.BaseClass import BaseAction
@@ -223,7 +221,10 @@ feature_graph.add_edge(START, 'feature_agent')
 feature_graph.add_conditional_edges(
     "feature_agent",
     route_tool_or_finish,
-    {"feature_tools": "feature_tools", 'propose_action': 'propose_action'},
+    {
+        "feature_tools": "feature_tools", 
+        'propose_action': 'propose_action'
+    }
 )
 feature_graph.add_edge('propose_action', END)
 feature_graph.add_edge("feature_tools", "feature_agent")
