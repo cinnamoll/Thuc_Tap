@@ -188,7 +188,12 @@ def executor_node(state: AgentState) -> dict:
         result = f"EXECUTION_FAILED: {e}"
         fallback_used = True
     
-    return {"fallback_used": fallback_used, "skip_confirm": skip_confirm, "action_res": result, 'current_action': action}
+    return {
+        "fallback_used": fallback_used, 
+        "skip_confirm": skip_confirm, 
+        "action_res": result, 
+        'current_action': action
+    }
     
 def review_execution_node(state: AgentState):
     action = state['pending_action']

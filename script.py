@@ -3,7 +3,7 @@ import os
 from langgraph.graph import StateGraph, START, END
 from typing import List, TypedDict, Literal
 from langchain_core.messages import BaseMessage, SystemMessage, HumanMessage
-from langchain_huggingface import HuggingFaceEndpoint, ChatHuggingFace
+from langchain_deepseek import ChatDeepSeek
 from langchain_core.tools import tool
 from langgraph.prebuilt import ToolNode, tools_condition
 import polars as pl
@@ -21,51 +21,62 @@ from Subgraph.report import generate_report_node, build_report_file_node
 
 load_dotenv()
 
-hf_endpoint = HuggingFaceEndpoint(
-    repo_id='Qwen/Qwen2.5-7B-Instruct',
-)
-
-llm = ChatHuggingFace(llm=hf_endpoint) 
-
-def generate_id_node(state:AgentState):
-    run_id = f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:6]}"
-    return {"run_id":run_id}
+llm = ChatDeepSeek(model="deepseek-v4-flash")
 
 class RouteDecision(TypedDict):
-    next: Literal["cleaning", "eda", "feature_engineering", "FINISH"]
+    next: Literal["cleaning", "eda", "feature_engineering", "review", "generate_report", "FINISH"]
     reason: str 
 
 SUPERVISOR_PROMPT = """
-    You are the Supervisor coordinating a data analysis pipeline with the following workers:
-    - Cleaning: Handles binning, encoding processing, and general data cleaning.
-    - EDA: Handles Univariate Analysis, Multivariate Analysis, and Charting.
+    You are the Supervisor coordinating a data analysis pipeline. You have the ability to route tasks to the following workers/nodes:
+    - cleaning: Handles binning, encoding processing, and general data cleaning.
+    - eda: Handles Univariate Analysis, Multivariate Analysis, and Charting.
     - feature_engineering: Handles feature transformation, creation, and selection.
+    - generate_report: Generates a comprehensive report based on the analysis.
+    - build_report: Compiles and builds the final report document.
 
-    Your primary directive is to respect the user's explicit intent:
+    **Workflow Context:** 
+    When you delegate to `cleaning`, `eda`, or `feature_engineering`, you only trigger the start of that process. 
+    Their outputs will automatically flow through a downstream pipeline (`validation` -> `executor` -> `review`). 
+    You do not need to manually trigger validation, execution, or review.
+
+    Your primary directive is to respect the user's explicit intent and the graph structure:
 
     1. Check User Intent First: 
-    - If the user's latest request was only to "extract metadata" (or inspect the dataset) 
-    and they did NOT explicitly ask to clean, analyze, or engineer features yet, return "FINISH" immediately. 
-    Do not trigger any workers.
-    - Only delegate to a worker if the user has explicitly requested a task that falls under their description.
+    - ONLY EXECUTE THE ACTION THE USER REQUESTED IF THE ACTION BELONGS IN ["cleaning", "eda", "feature_engineering"]
+    AND ASK USER FOR VALIDATION 
 
-    2. Wait for Confirmation:
-    - Stop and return "FINISH" after a worker completes its task to allow the user to review the output and give confirmation.
+    2. Wait for Confirmation & Graph Flow:
+    - Stop and return "FINISH" after you delegate a task. The system will handle the downstream execution (`validation`, `executor`, `review`) 
+    and will allow the user to review the output before returning to you for the next step.
 
     3. Avoid Repetition:
     - Do not repeat a step that is already in the completed steps list unless the user explicitly asks to run it again.
 
-    If no further actions are requested or required by the user's prompt, return "FINISH".
+    4.Respond with a JSON object matching this schema:\n"
+        '{"next": "cleaning" | "eda" | "feature_engineering" | "review" | "generate_report" | "FINISH", '
+        '"reason": "<string>"}'
+
+    5. Terminate when done:
+    - If no further actions are requested or required by the user's prompt, or if the pipeline workflow is complete, 
+    return "FINISH" (which maps to the `__end__` node).
 """
 
 def supervisor_node(state: AgentState) -> Command[Literal["cleaning", "eda", "feature_engineering", "review", "generate_report", END]]: #type:ignore
-    llm_router = llm.with_structured_output(RouteDecision)
+    check = state.get('check_start', True)
+    if check == True:
+        run_id = f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:6]}"
+        state['run_id'] = run_id
+        state["check_start"] = False
+
+    llm_router = llm.with_structured_output(RouteDecision, method='json_mode')
 
     messages = [
         SystemMessage(content=SUPERVISOR_PROMPT),
+        *state.get("messages", []),
         HumanMessage(content=(
             f"Metadata dataset:\n{state.get('metadata')}\n"
-            f"Completed steps: {state.get('completed_steps', [])}\n" #####
+            f"Completed steps: {state.get('completed_actions', [])}\n" 
             "Proceed to next step"
         ))
     ]
@@ -95,7 +106,6 @@ def route_after_review(state:AgentState) -> Literal["executor", "validation", "s
 
 graph = StateGraph(AgentState)
 
-graph.add_node('generate_id', generate_id_node)
 graph.add_node('supervisor', supervisor_node)
 graph.add_node('cleaning', cleaning)
 graph.add_node('eda', eda)
@@ -106,11 +116,10 @@ graph.add_node("review", review_execution_node)
 graph.add_node('generate_report', generate_report_node)
 graph.add_node('build_report', build_report_file_node)
 
-graph.add_edge(START, 'generate_id')
-graph.add_edge('generate_id', 'supervisor')
-graph.add_edge('supervisor', 'cleaning')
-graph.add_edge('supervisor', 'eda')
-graph.add_edge('supervisor', 'feature_engineering')
+graph.add_edge(START, 'supervisor')
+# graph.add_edge('supervisor', 'cleaning')
+# graph.add_edge('supervisor', 'eda')
+# graph.add_edge('supervisor', 'feature_engineering')
 graph.add_edge('cleaning', 'validation')
 graph.add_edge('eda', 'validation')
 graph.add_edge('feature_engineering', 'validation')
@@ -119,10 +128,6 @@ graph.add_edge("executor", "review")
 graph.add_edge("review", "generate_report")
 graph.add_edge("generate_report", "build_report")
 graph.add_edge("build_report", END)
-
-# graph.add_conditional_edges(
-    
-# )
 
 graph.add_conditional_edges(
     "review",
@@ -136,16 +141,16 @@ graph.add_conditional_edges(
 
 app = graph.compile()
 
-img = app.get_graph().draw_mermaid_png()
-with open('graph_image.png', 'wb') as f:
-    f.write(img)
+# img = app.get_graph().draw_mermaid_png()
+# with open('graph_image.png', 'wb') as f:
+#     f.write(img)
 
-# user_input = input("Enter: ")
-# while user_input.lower() != 'exit':
-#     for event in app.stream({'messages': [HumanMessage(content=user_input)]}):
-#         for node_name, node_state in event.items():
-#             print(f"\n--- Output from {node_name} ---")
-#             last_message = node_state['messages'][-1]
-#             print(last_message.content if last_message.content else "[Tool Call]")
+user_input = input("Enter: ")
+while user_input.lower() != 'exit':
+    for event in app.stream({'messages': [HumanMessage(content=user_input)]}):
+        for node_name, node_state in event.items():
+            print(f"\n--- Output from {node_name} ---")
+            last_message = node_state['messages'][-1]
+            print(last_message.content if last_message.content else "[Tool Call]")
             
-#     user_input = input("Enter: ")
+    user_input = input("Enter: ")

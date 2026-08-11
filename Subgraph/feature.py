@@ -1,23 +1,18 @@
 from dotenv import load_dotenv
 from langgraph.graph import StateGraph, START, END
-from typing import Literal
+from typing import Literal, Optional
 from langchain_core.messages import SystemMessage, ToolMessage
-from langchain_huggingface import HuggingFaceEndpoint, ChatHuggingFace
+from langchain_deepseek import ChatDeepSeek
 from langchain_core.tools import tool
 import polars as pl
 from enum import Enum
 from langgraph.types import Command
 
 from Class.AgentState import AgentState
-from Class.BaseClass import BaseAction
 
 load_dotenv()
 
-hf_endpoint = HuggingFaceEndpoint(
-    repo_id='Qwen/Qwen2.5-7B-Instruct',
-)
-
-llm = ChatHuggingFace(llm=hf_endpoint) 
+llm = ChatDeepSeek(model="deepseek-v4-flash")
 
 class EncodingType(str, Enum):
     LABEL = "label_encoding" 
@@ -30,7 +25,14 @@ class BinningType(str, Enum):
     QUANTILE = "quantile"
     STANDARD = "standardize"
 
-class EngineeringAction(BaseAction):
+class EngineeringAction():
+    file_path: str
+    file_format: str
+    reason: str
+    column: str
+    rows_affected: Optional[int] = None
+    rows_ratio: Optional[float] = None
+    risk_level: Optional[Literal["low", "medium", "high"]] = None
     actionType: EncodingType | BinningType
     n_bin: int=10,
 
@@ -176,16 +178,16 @@ def feature_agent_node(state: AgentState):
         1. Call encoding tool for categorical column and preview column(s) head after encoded 
         2. Call standardization and binning tool for numerical column and preview column(s) head 
         after standardized / binned 
-        3. Once you have enough information, stop calling tools and summarize your findings
-        and recommended action in plain text — a separate step will convert this into
-        a structured action.
+        3. Once you have enough information, stop calling tools and summarize your findings to 
+        match the format of EngineeringAction class, convert this to a JSON object and recommended action in plain text 
+        — a separate step will convert this into a structured action.
         """
     )
     response = feature_llm.invoke([system_prompt] + messages)
     return {'messages': [response]} 
 
 def propose_action_node(state: AgentState) -> AgentState:
-    structured_llm = llm.with_structured_output(EngineeringAction)
+    structured_llm = llm.with_structured_output(EngineeringAction, method='json_mode')
     action = structured_llm.invoke(state["messages"])
     return Command(update={"pending_action": action})
 

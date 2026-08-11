@@ -2,7 +2,7 @@ from dotenv import load_dotenv
 from langgraph.graph import StateGraph, START, END
 from typing import List, Optional, Literal
 from langchain_core.messages import SystemMessage, ToolMessage
-from langchain_huggingface import HuggingFaceEndpoint, ChatHuggingFace
+from langchain_deepseek import ChatDeepSeek
 from langchain_core.tools import tool
 import polars as pl
 from pydantic import BaseModel
@@ -14,11 +14,7 @@ from Class.AgentState import AgentState
 
 load_dotenv()
 
-hf_endpoint = HuggingFaceEndpoint(
-    repo_id='Qwen/Qwen2.5-7B-Instruct',
-)
-
-llm = ChatHuggingFace(llm=hf_endpoint) 
+llm = ChatDeepSeek(model="deepseek-v4-flash")
     
 class EDAInsight(BaseModel):
     metric_name: str
@@ -91,7 +87,7 @@ def univariate_analyst_numeric(file_path: str, file_format:str, column: str) -> 
 
     skew = stats["skewness"]
     if skew is None:
-        skew_desc = "không xác định"
+        skew_desc = "Unidentified"
     elif abs(skew) < 0.5:
         skew_desc = "approximately symmetric"
     elif skew > 0.5:
@@ -185,7 +181,10 @@ def univariate_analyst_cat(file_path: str, file_format:str, column: str) -> str:
     with pl.Config(tbl_rows=null_df.height if null_df.height > 0 else 1, tbl_cols=4):
         null_str = str(null_df) if not null_df.is_empty() else "No missing values."
 
-    mode_str = ', '.join(map(str, modes)) if modes else "None"
+    if modes.is_empty():
+        mode_str = None
+    else:
+        mode_str = ', '.join(map(str, modes)) 
     
     res = {
         "valid_count": valid_count,
@@ -286,9 +285,9 @@ def propose_insight_node(state:AgentState) -> AgentState:
         1. Always call the profiling or univariate tools first to understand the dataset's schema, 
         distributions, and basic statistics.
         2. Analyze the data to extract the required statistics on the stated column.
-        3. Once you have gathered sufficient insights, stop calling tools. Summarize your key findings 
-        in plain text and suggest the most impactful visualizations (e.g., count distributions, correlations, box plots) 
-        to represent these insights.
+        3. Once you have gathered sufficient insights, stop calling tools. Summarize your key findings to 
+        match the format of EDAInsight class, convert this to a JSON object and suggest the most impactful 
+        visualizations (e.g., count distributions, correlations, box plots) to represent these insights.
         """
     )
     response = eda_llm.invoke([system_prompt] + messages)

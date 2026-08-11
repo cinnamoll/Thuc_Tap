@@ -62,7 +62,7 @@ def compute_impact_engineering(action: EngineeringAction, dataset_profile: Dict)
     action.rows_ratio = affected / total_rows if total_rows else 0.0
     return action
 
-def compute_impact_node(state: AgentState) -> Dict:
+def compute_impact_node(state: AgentState) -> dict:
     action = state["pending_action"]
     dataset_profile = state['dataset_profile']
 
@@ -76,7 +76,7 @@ def compute_impact_node(state: AgentState) -> Dict:
         "computed_impact": {"rows_affected": calculated.rows_affected, "rows_ratio": calculated.rows_ratio}
     }
 
-def risk_node(state: AgentState) -> Dict:
+def risk_node(state: AgentState) -> dict:
     pct = state.get("computed_impact", {}).get("rows_ratio", 0.0)
 
     if pct < 0.05:
@@ -88,7 +88,7 @@ def risk_node(state: AgentState) -> Dict:
 
     return {"risk_level": risk_level}
 
-def validator_node(state: AgentState) -> Dict:
+def validator_node(state: AgentState) -> dict:
     action = state["pending_action"]
     computed = state.get("computed_impact", {}) 
        
@@ -105,7 +105,7 @@ def validator_node(state: AgentState) -> Dict:
 
     return {"validation": True, "validation_error": None}
 
-def repair_node(state: AgentState) -> Dict:
+def repair_node(state: AgentState) -> dict:
     error = state.get("validation_error", "Output has incorrect format or incorrect stats")
     retry_count = state.get("retry_count", 0) + 1
 
@@ -118,7 +118,7 @@ def repair_node(state: AgentState) -> Dict:
 
     return {"retry_count": retry_count, "messages": [repair_note]}
 
-def human_review_node(state: AgentState) -> Dict:
+def human_review_node(state: AgentState) -> dict:
     action = state["pending_action"]
 
     diff_summary = f"Will drop {action.rows_affected} rows ({action.rows_ratio}) due to {action.reason}"

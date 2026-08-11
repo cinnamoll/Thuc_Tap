@@ -1,4 +1,4 @@
-from typing import Annotated, Sequence, List, Optional, TypedDict, Union, Literal
+from typing import Annotated, Sequence, List, Optional, TypedDict, Dict
 from langchain_core.messages import BaseMessage
 from operator import add as add_messages
 
@@ -9,7 +9,8 @@ class AgentState(TypedDict):
     file_path: str
     file_format: str
     run_id:str
-    dataset_profile: Optional[dict]
+    check_start:bool
+    dataset_profile: dict
     univariate = Optional[dict]
     
     risk_level: Optional[str]

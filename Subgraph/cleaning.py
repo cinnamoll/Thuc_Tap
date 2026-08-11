@@ -1,24 +1,19 @@
 from dotenv import load_dotenv
 from langgraph.graph import StateGraph, START, END
-from typing import Literal
+from typing import Literal, Optional, Dict, Any
 from enum import Enum
 from langchain_core.messages import SystemMessage,ToolMessage
-from langchain_huggingface import HuggingFaceEndpoint, ChatHuggingFace
+from langchain_deepseek import ChatDeepSeek
 from langchain_core.tools import tool
 import polars as pl
 from pydantic import field_validator
 from langgraph.types import Command
 
 from Class.AgentState import AgentState
-from Class.BaseClass import BaseAction
 
 load_dotenv()
 
-hf_endpoint = HuggingFaceEndpoint(
-    repo_id='Qwen/Qwen2.5-7B-Instruct'
-)
-
-llm = ChatHuggingFace(llm=hf_endpoint) 
+llm = ChatDeepSeek(model="deepseek-v4-flash")
 
 class CleaningActionType(str, Enum):
     DROP_ROWS = "drop_rows"
@@ -28,7 +23,14 @@ class CleaningActionType(str, Enum):
     CAST_DTYPE = "cast_dtype"
     DROP_COLUMN = "drop_column"
 
-class CleaningAction(BaseAction):
+class CleaningAction():
+    file_path: str
+    file_format: str
+    reason: str
+    column: str
+    rows_affected: Optional[int] = None
+    rows_ratio: Optional[float] = None
+    risk_level: Optional[Literal["low", "medium", "high"]] = None
     actionType: CleaningActionType
     target_dtype: str
 
@@ -40,7 +42,7 @@ class CleaningAction(BaseAction):
         return v
 
 @tool
-def profile_dataset(file_path: str, file_format:str) -> dict:
+def profile_dataset(file_path:str, file_format:str) -> dict:
     """
     Scan a dataset (lazy, not loading the entire dataset into RAM) and return statistics:
     dtypes, number of nulls for both numerical and categorical columns and unique values for categorical column.
@@ -61,14 +63,14 @@ def profile_dataset(file_path: str, file_format:str) -> dict:
         pl.all().n_unique().name.suffix("_nunique"),
     ]).collect(engine='streaming')
 
-    res = {
+    res:Dict[str, Any] = {
         "columns": list(schema.names()),
         "dtypes": {k: str(v) for k, v in schema.items()},
         "stats": stats.to_dicts()[0],
         "n_rows": lf.select(pl.len()).collect().item()
     }
 
-    return Command(update={"dataset_profile":res})
+    return res
 
 cleaning_tools = [profile_dataset]
 cleaning_llm = llm.bind_tools(cleaning_tools)
@@ -83,7 +85,7 @@ def data_cleaning_node(state:AgentState):
         1. Always call profile_dataset first to understand the dataset's problems.
         2. Based on the results, analyze which columns have problems (nulls, wrong dtype, etc).
         3. Once you have enough information, stop calling tools and summarize your findings to 
-        match the format of CleaningAction class and recommended action in plain text 
+        match the format of CleaningAction class, convert this to a JSON object and recommended action in plain text
         — a separate step will convert this into a structured action.
         """
     )
@@ -91,7 +93,7 @@ def data_cleaning_node(state:AgentState):
     return {'messages': [response]}    
 
 def propose_action_node(state: AgentState) -> AgentState:
-    structured_llm = llm.with_structured_output(CleaningAction)
+    structured_llm = llm.with_structured_output(CleaningAction, method='json_mode')
     action = structured_llm.invoke(state["messages"])
     return Command(update={"pending_action": action})
 
@@ -108,15 +110,13 @@ def take_action_cleaning(state:AgentState) -> AgentState:
         if not t['name'] in cleaning_tools_dict: 
             print(f"\nTool: {t['name']} does not exist.")
             result = "Incorrect Tool Name, Please Retry and Select tool from List of Available tools."
-        
         else:
             result = cleaning_tools_dict[t['name']].invoke(t['args'])
             print(f"Result length: {len(str(result))}")
             
         results.append(ToolMessage(tool_call_id=t['id'], name=t['name'], content=str(result)))
-
     print("Tools Execution Complete. Back to the supervisor!")
-    return {'messages': results}
+    return {'messages': results, 'dataset_profile': result}
 
 cleaning_graph = StateGraph(AgentState)
 cleaning_graph.add_node('cleaning_agent', data_cleaning_node)

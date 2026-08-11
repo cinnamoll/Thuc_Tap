@@ -1,7 +1,7 @@
 from dotenv import load_dotenv
 from typing import Optional
 from langchain_core.messages import SystemMessage, HumanMessage
-from langchain_huggingface import HuggingFaceEndpoint, ChatHuggingFace
+from langchain_deepseek import ChatDeepSeek
 from pydantic import BaseModel, Field
 import json
 
@@ -9,11 +9,7 @@ from Class.AgentState import AgentState
 
 load_dotenv()
 
-hf_endpoint = HuggingFaceEndpoint(
-    repo_id='Qwen/Qwen2.5-7B-Instruct',
-)
-
-llm = ChatHuggingFace(llm=hf_endpoint) 
+llm = ChatDeepSeek(model="deepseek-v4-flash")
 
 class ManagerReport(BaseModel):
     summary: str = Field(..., min_length=20, description="Summarization in 2-3 sentences for managers")
@@ -50,7 +46,7 @@ def generate_report_node(state: AgentState) -> dict:
 
     human_prompt = HumanMessage(content=f"Verified data:\n{json.dumps(facts, ensure_ascii=False)}")
 
-    structured_llm = llm.with_structured_output(ManagerReport)
+    structured_llm = llm.with_structured_output(ManagerReport, method='json_mode')
     report = structured_llm.invoke([system_prompt, human_prompt])
 
     return {"manager_report": report}
