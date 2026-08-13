@@ -1,31 +1,30 @@
 from langgraph.graph import StateGraph, START, END
-from typing import Literal, Dict
+from typing import Literal, dict
 from langchain_core.messages import HumanMessage
 from langchain_core.tools import tool
 from langgraph.types import interrupt
 from pydantic import ValidationError
 
 from Class.AgentState import AgentState
-from Subgraph.cleaning import CleaningAction, CleaningActionType, cleaning
-from Subgraph.eda import EDAInsight
-from Subgraph.feature import EngineeringAction, EncodingType, BinningType, feature_engineering
+from Subgraph.cleaning import CleaningAction, CleaningActionType, CleaningActionList, cleaning
+from Subgraph.eda import EDAInsight, EDAInsightList
+from Subgraph.feature import EngineeringAction, EncodingType, BinningType, EngineeringActionList, feature_engineering
 
 @tool
-def compute_impact_cleaning(action: CleaningAction, dataset_profile: Dict) -> CleaningAction:
+def compute_impact_cleaning(action: CleaningAction, dataset_profile: dict) -> CleaningAction:
     """This tool compute risk level of cleaning action in a column
 
     Args:
         action (CleaningAction): Provide what type of cleaning action
-        dataset_profile (Dict): metadata about the column
+        dataset_profile (dict): metadata about the column
 
     Returns:
         CleaningAction: Updated Cleaning action
     """
-    stats = dataset_profile["stats"]
     total_rows = dataset_profile.get("n_rows") 
 
     if action.actionType == CleaningActionType.DROP_ROWS:
-        affected = stats.get(f"{action.column}_nulls", 0)
+        affected = dataset_profile["stats"].get(f"{action.column}_nulls", 0)
     elif action.actionType == CleaningActionType.DROP_COLUMN:
         affected = total_rows 
     else:
@@ -36,12 +35,12 @@ def compute_impact_cleaning(action: CleaningAction, dataset_profile: Dict) -> Cl
     return action
 
 @tool
-def compute_impact_engineering(action: EngineeringAction, dataset_profile: Dict) -> EngineeringAction:
+def compute_impact_engineering(action: EngineeringAction, dataset_profile: dict) -> EngineeringAction:
     """This tool compute risk level of Encoding or Binning action in a column
 
     Args:
         action (CleaningAction): Provide what type of encoding / binning action
-        dataset_profile (Dict): metadata about the column
+        dataset_profile (dict): metadata about the column
 
     Returns:
         CleaningAction: Updated Engineering action
@@ -63,13 +62,15 @@ def compute_impact_engineering(action: EngineeringAction, dataset_profile: Dict)
     return action
 
 def compute_impact_node(state: AgentState) -> dict:
-    action = state["pending_action"]
-    dataset_profile = state['dataset_profile']
+    actions = state.get("pending_action", [])
+    dataset_profile = state.get('dataset_profile', [])
 
-    if isinstance(action, CleaningAction):
-        calculated = compute_impact_cleaning.invoke(action, dataset_profile)
-    else:
-        calculated = compute_impact_engineering.invoke(action, dataset_profile)
+    calculated = []
+    for action in actions:
+        if isinstance(action, CleaningAction):
+            calculated.append(compute_impact_cleaning.invoke(action, dataset_profile))
+        else:
+            calculated.append(compute_impact_engineering.invoke(action, dataset_profile))
 
     return {
         "pending_action": calculated, 
@@ -89,19 +90,20 @@ def risk_node(state: AgentState) -> dict:
     return {"risk_level": risk_level}
 
 def validator_node(state: AgentState) -> dict:
-    action = state["pending_action"]
+    actions = state["pending_action"]
     computed = state.get("computed_impact", {}) 
-       
-    try:
-        type(action).model_validate(action.model_dump())
-    except ValidationError:
-        return {"validation": False, "validation_error": "schema_invalid"}
+    
+    for action in actions:
+        try:
+            type(action).model_validate(action.model_dump())
+        except ValidationError:
+            return {"validation": False, "validation_error": "schema_invalid"}
 
-    if action.rows_affected != computed.get("rows_affected", 0):
-        return {
-            "validation": False, 
-            "validation_error": f"LLM reported {action.rows_affected} but system computed {computed.get('rows_affected')} rows affected."
-        }
+        if action.rows_affected != computed.get("rows_affected", 0):
+            return {
+                "validation": False, 
+                "validation_error": f"LLM reported {action.rows_affected} but system computed {computed.get('rows_affected')} rows affected."
+            }
 
     return {"validation": True, "validation_error": None}
 
@@ -118,19 +120,21 @@ def repair_node(state: AgentState) -> dict:
 
     return {"retry_count": retry_count, "messages": [repair_note]}
 
-def human_review_node(state: AgentState) -> dict:
-    action = state["pending_action"]
+def human_review_node(state: AgentState) -> dict: # Config lai 2 bien actions va preview de matching column
+    actions = state["pending_action"]
+    preview = state['preview_feature']
+    
+    for action in actions:
+        diff_summary = f"Will drop {action.rows_affected} rows ({action.rows_ratio}) due to {action.reason}\n"
 
-    diff_summary = f"Will drop {action.rows_affected} rows ({action.rows_ratio}) due to {action.reason}"
+        decision = interrupt({
+            "type": "human_review_request",
+            "action": action.model_dump(),
+            "diff_summary": diff_summary,
+        })
 
-    decision = interrupt({
-        "type": "human_review_request",
-        "action": action.model_dump(),
-        "diff_summary": diff_summary,
-    })
-
-    if decision.get("approved"):
-        return {"action_status": True}
+        if decision.get("approved"):
+            return {"action_status": True}
 
     return {"action_status": False, "pending_action": None}
 
@@ -146,7 +150,7 @@ def deterministic_fallback_node(state: AgentState):
     return {"messages": HumanMessage(res), "fallback_used": True}
 
 def route_after_propose(state):
-    if isinstance(state.get("pending_output"), EDAInsight):
+    if isinstance(state.get("pending_insight"), EDAInsight):
         return "validator" 
     return "compute_impact"  
 

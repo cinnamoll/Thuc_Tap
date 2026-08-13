@@ -1,45 +1,17 @@
 from dotenv import load_dotenv
 from langgraph.graph import StateGraph, START, END
-from typing import Literal, Optional, Dict, Any
-from enum import Enum
-from langchain_core.messages import SystemMessage,ToolMessage
+from typing import Literal
+from langchain_core.messages import SystemMessage, ToolMessage, HumanMessage
 from langchain_deepseek import ChatDeepSeek
 from langchain_core.tools import tool
+from langgraph.prebuilt import ToolNode 
 import polars as pl
-from pydantic import field_validator
 from langgraph.types import Command
-
 from Class.AgentState import AgentState
-
+from Class.CleaningAction import CleaningAction
 load_dotenv()
 
 llm = ChatDeepSeek(model="deepseek-v4-flash")
-
-class CleaningActionType(str, Enum):
-    DROP_ROWS = "drop_rows"
-    IMPUTE_MEDIAN = "impute_median"
-    IMPUTE_MEAN = "impute_mean"
-    IMPUTE_MODE = "impute_mode"
-    CAST_DTYPE = "cast_dtype"
-    DROP_COLUMN = "drop_column"
-
-class CleaningAction():
-    file_path: str
-    file_format: str
-    reason: str
-    column: str
-    rows_affected: Optional[int] = None
-    rows_ratio: Optional[float] = None
-    risk_level: Optional[Literal["low", "medium", "high"]] = None
-    actionType: CleaningActionType
-    target_dtype: str
-
-    @field_validator("target_dtype")
-    @classmethod
-    def require_dtype_for_cast(cls, v, info):
-        if info.data.get("actionType") == CleaningActionType.CAST_DTYPE and not v:
-            raise ValueError("cast_dtype needs target_dtype")
-        return v
 
 @tool
 def profile_dataset(file_path:str, file_format:str) -> dict:
@@ -63,39 +35,64 @@ def profile_dataset(file_path:str, file_format:str) -> dict:
         pl.all().n_unique().name.suffix("_nunique"),
     ]).collect(engine='streaming')
 
-    res:Dict[str, Any] = {
+    res = {
         "columns": list(schema.names()),
         "dtypes": {k: str(v) for k, v in schema.items()},
         "stats": stats.to_dicts()[0],
         "n_rows": lf.select(pl.len()).collect().item()
     }
 
-    return res
+    return Command(update={
+        "dataset_profile": res,
+        "messages": [ToolMessage(content=str(res, tool_call_id=""))]
+    })
 
 cleaning_tools = [profile_dataset]
+tool_node = ToolNode(cleaning_tools)
 cleaning_llm = llm.bind_tools(cleaning_tools)
 cleaning_tools_dict = {cleaning_tool.name: cleaning_tool for cleaning_tool in cleaning_tools}
 
 def data_cleaning_node(state:AgentState):
+    response = cleaning_llm.invoke(state['messages'])
+    return {'messages': [response]}    
+
+def propose_action_node(state: AgentState) -> AgentState:
     messages = state['messages']
+    existing_actions = state.get('pending_cleaning', [])
+    covered_cols = [a.column for a in existing_actions]
     system_prompt = SystemMessage(
         content="""
         You are a data cleaning INVESTIGATION agent. You do NOT execute any cleaning action.
         Required procedure:
         1. Always call profile_dataset first to understand the dataset's problems.
-        2. Based on the results, analyze which columns have problems (nulls, wrong dtype, etc).
-        3. Once you have enough information, stop calling tools and summarize your findings to 
-        match the format of CleaningAction class, convert this to a JSON object and recommended action in plain text
-        — a separate step will convert this into a structured action.
+        2. Look at the columns already covered in 'Already proposed actions' below — do NOT propose 
+        an action for a column that already has one, unless explicitly asked to redo it.
+        3. Pick exactly ONE remaining column with the most severe unresolved problem 
+        (nulls, wrong dtype, etc.) and propose a single CleaningAction for it.
+        4. If every problematic column already has a proposed action, or there are no more issues 
+        to address, return a JSON object with "actionType": "NONE" to signal completion.
         """
     )
-    response = cleaning_llm.invoke([system_prompt] + messages)
-    return {'messages': [response]}    
-
-def propose_action_node(state: AgentState) -> AgentState:
     structured_llm = llm.with_structured_output(CleaningAction, method='json_mode')
-    action = structured_llm.invoke(state["messages"])
-    return Command(update={"pending_action": action})
+    res = structured_llm.invoke(
+        [system_prompt] + 
+        HumanMessage(content=f"Dataset profile (pre-computed): {state['dataset_profile']}") + 
+        messages + [HumanMessage(content=(
+            f"Already proposed actions (columns covered): {covered_cols}\n"
+            'Summarize as JSON matching schema for ONE action only:\n'
+            '{"file_path": str, "file_format": str, "reason": str, "column": str, '
+            '"rows_affected": int|null, "rows_ratio": float|null, '
+            '"risk_level": "low"|"medium"|"high"|null, "actionType": str, "target_dtype": str}'
+        ))]
+    )
+    summary = "\n".join(f"- {a.column}: {a.actionType}" for a in existing_actions)
+    if res.actionType == "NONE":
+        return Command(update={"cleaning_done": True})
+
+    return Command(update={
+        "pending_cleaning": existing_actions + [res],
+        "messages": [HumanMessage(content=summary)]
+    })
 
 def route_tool_or_finish(state) -> Literal["cleaning_tools", "propose_action"]: 
     last_msg = state["messages"][-1]
@@ -103,24 +100,14 @@ def route_tool_or_finish(state) -> Literal["cleaning_tools", "propose_action"]:
         return "cleaning_tools"
     return "propose_action"
 
-def take_action_cleaning(state:AgentState) -> AgentState:
-    tool_calls = state['messages'][-1].tool_calls
-    results = []
-    for t in tool_calls:
-        if not t['name'] in cleaning_tools_dict: 
-            print(f"\nTool: {t['name']} does not exist.")
-            result = "Incorrect Tool Name, Please Retry and Select tool from List of Available tools."
-        else:
-            result = cleaning_tools_dict[t['name']].invoke(t['args'])
-            print(f"Result length: {len(str(result))}")
-            
-        results.append(ToolMessage(tool_call_id=t['id'], name=t['name'], content=str(result)))
-    print("Tools Execution Complete. Back to the supervisor!")
-    return {'messages': results, 'dataset_profile': result}
+def route_after_propose(state: AgentState) -> Literal["propose_action", END]: #type:ignore
+    if state.get("cleaning_done") == True:
+        return END
+    return "propose_action" 
 
 cleaning_graph = StateGraph(AgentState)
 cleaning_graph.add_node('cleaning_agent', data_cleaning_node)
-cleaning_graph.add_node('cleaning_tools', take_action_cleaning)
+cleaning_graph.add_node('cleaning_tools', tool_node)
 cleaning_graph.add_node("propose_action", propose_action_node)
 
 cleaning_graph.add_edge(START, "cleaning_agent")
@@ -132,7 +119,14 @@ cleaning_graph.add_conditional_edges(
         "propose_action": "propose_action"
     }
 )
-cleaning_graph.add_edge("propose_action", END)
+cleaning_graph.add_conditional_edges(
+    "propose_action",
+    route_after_propose,
+    {
+        "propose_action": "propose_action",
+        "END": END,
+    },
+)
 cleaning_graph.add_edge("cleaning_tools", "cleaning_agent")
 
 cleaning = cleaning_graph.compile()

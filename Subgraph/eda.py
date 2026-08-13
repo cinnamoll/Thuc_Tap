@@ -1,9 +1,10 @@
 from dotenv import load_dotenv
 from langgraph.graph import StateGraph, START, END
 from typing import List, Optional, Literal
-from langchain_core.messages import SystemMessage, ToolMessage
+from langchain_core.messages import SystemMessage, ToolMessage, HumanMessage
 from langchain_deepseek import ChatDeepSeek
 from langchain_core.tools import tool
+from langgraph.prebuilt import ToolNode, tools_condition
 import polars as pl
 from pydantic import BaseModel
 import matplotlib.pyplot as plt
@@ -11,18 +12,12 @@ import seaborn as sns
 from langgraph.types import Command
 
 from Class.AgentState import AgentState
+from Class.EDAInsight import EDAInsight
 
 load_dotenv()
 
 llm = ChatDeepSeek(model="deepseek-v4-flash")
     
-class EDAInsight(BaseModel):
-    metric_name: str
-    value: float
-    n_rows: int
-    chart_path: Optional[str] = None
-    confidence_note: Optional[str] = None
-
 def get_lf(file_path: str, file_format: str):
     if file_format == "csv":
         lf = pl.scan_csv(file_path)
@@ -118,7 +113,7 @@ def univariate_analyst_numeric(file_path: str, file_format:str, column: str) -> 
         "upper_bound": round(upper_bound, 4)
     }
     
-    return Command(update={"univariate":res})
+    return Command(update={"univariate": res, "messages": [ToolMessage(content=str(res))]})
     
 @tool
 def univariate_analyst_cat(file_path: str, file_format:str, column: str) -> str:
@@ -195,7 +190,7 @@ def univariate_analyst_cat(file_path: str, file_format:str, column: str) -> str:
         "mode": mode_str
     }
     
-    return Command(update={"univariate": res})
+    return Command(update={"univariate": res,"messages": [ToolMessage(content=str(res))]})
  
 @tool
 def draw_graph(file_path: str, file_format: str, cols: List[str]) -> str:
@@ -260,13 +255,16 @@ def draw_graph(file_path: str, file_format: str, cols: List[str]) -> str:
             plt.title(f"Bubble chart: X={num_cols[0]}, Y={num_cols[1]}, Size={num_cols[2]}")
 
     plt.tight_layout()
-    file_name = "eda_output.png"
+    for col in cols:
+        temp += (col + ' ')
+    file_name = f"{temp}_eda_output.png"
     plt.savefig(file_name)
     plt.close()
     
-    return f"Graph successfully drawn and saved at {file_name}"
+    return Command(update={"chart_paths": [file_name], "messages": [ToolMessage(content=f"Graph successfully drawn and saved at {file_name}")]})
     
 eda_tools = [univariate_analyst_numeric, univariate_analyst_cat, draw_graph]
+tool_node = ToolNode(eda_tools)
 eda_llm = llm.bind_tools(tools=eda_tools)
 eda_tools_dict = {eda_tool.name: eda_tool for eda_tool in eda_tools}
 
@@ -274,43 +272,44 @@ def eda_agent_node(state: AgentState):
     response = eda_llm.invoke(state["messages"])
     return {"messages": [response]}
 
-
-def propose_insight_node(state:AgentState) -> AgentState:
+def propose_insight_node(state: AgentState) -> AgentState:
     messages = state['messages']
+    existing_actions = state.get('pending_insight', [])
+    covered_cols = [[a.column, a.metric_name] for a in existing_actions]
     system_prompt = SystemMessage(
-        content="""
-        You are an Exploratory Data Analysis (EDA) INSIGHT agent. You do NOT execute any data transformation or cleaning actions.
-        
+    content="""
+        You are an Exploratory Data Analysis (EDA) INSIGHT agent. You do NOT execute any data 
+        transformation or cleaning actions.
         Required procedure:
         1. Always call the profiling or univariate tools first to understand the dataset's schema, 
         distributions, and basic statistics.
-        2. Analyze the data to extract the required statistics on the stated column.
-        3. Once you have gathered sufficient insights, stop calling tools. Summarize your key findings to 
-        match the format of EDAInsight class, convert this to a JSON object and suggest the most impactful 
-        visualizations (e.g., count distributions, correlations, box plots) to represent these insights.
+        2. Look at the insights already covered in 'Already proposed insights' below — do NOT propose 
+        an insight for a (column, metric) pair that already has one, unless explicitly asked to redo it.
+        3. Pick exactly ONE remaining column/metric with the most impactful unresolved insight 
+        (central tendency, dispersion, distribution shape, correlation, etc.) and propose a single 
+        EDAInsight for it, including a suggested visualization if relevant.
+        4. If every meaningful insight has already been proposed, or there is nothing further worth 
+        analyzing, return a JSON object with "metric_name": "NONE" to signal completion.
         """
     )
-    response = eda_llm.invoke([system_prompt] + messages)
-    return {'messages': [response]}   
 
-def take_action_eda(state:AgentState) -> AgentState:
-    tool_calls = state['messages'][-1].tool_calls
-    results = []
-    for t in tool_calls:
-        print(f"Calling Tool: {t['name']} with query: {t['args'].get('query', 'No query provided')}")
-        
-        if not t['name'] in eda_tools_dict: 
-            print(f"\nTool: {t['name']} does not exist.")
-            result = "Incorrect Tool Name, Please Retry and Select tool from List of Available tools."
-        
-        else:
-            result = eda_tools_dict[t['name']].invoke(t['args'])
-            print(f"Result length: {len(str(result))}")
-            
-        results.append(ToolMessage(tool_call_id=t['id'], name=t['name'], content=str(result)))
+    structured_llm = llm.with_structured_output(EDAInsight, method="json_mode")
+    res = structured_llm.invoke(
+        [system_prompt] + messages + [HumanMessage(content=(
+            f"Already proposed insights: {covered_cols}\n"
+            'Summarize as JSON matching schema for ONE insight only:\n'
+            '{"metric_name": str, "value": float, "n_rows": int, "chart_path": str|null}'
+        ))]
+    )
 
-    print("Tools Execution Complete. Back to the supervisor!")
-    return {'messages': results}
+    summary = "\n".join(f"- {a.column}: {a.actionType}" for a in existing_actions)
+    if res.actionType == "NONE":
+        return Command(update={"eda_done": True})
+
+    return Command(update={
+        "pending_cleaning": existing_actions + [res],
+        "messages": [HumanMessage(content=summary)]
+    })
 
 def route_tool_or_finish(state) -> Literal["eda_tools", 'propose_insight']:
     last_msg = state["messages"][-1]
@@ -318,9 +317,14 @@ def route_tool_or_finish(state) -> Literal["eda_tools", 'propose_insight']:
         return "eda_tools"
     return 'propose_insight'
 
+def route_after_propose(state: AgentState) -> Literal["propose_insight", END]: #type:ignore
+    if state.get("insight_done") == True:
+        return END
+    return "propose_insight" 
+
 eda_graph = StateGraph(AgentState)
 eda_graph.add_node('eda_agent', eda_agent_node)
-eda_graph.add_node('eda_tools', take_action_eda)
+eda_graph.add_node('eda_tools', tool_node)
 eda_graph.add_node('propose_insight', propose_insight_node)
 
 eda_graph.add_edge(START, "eda_agent")
@@ -332,9 +336,15 @@ eda_graph.add_conditional_edges(
         "propose_insight": 'propose_insight'
     }
 )
-eda_graph.add_edge("propose_insight", END)
+eda_graph.add_conditional_edges(
+    "propose_insight",
+    route_after_propose,
+    {
+        "propose_insight": "propose_insight",
+        "END": END,
+    },
+)
 eda_graph.add_edge("eda_tools", "eda_agent")
-
 eda = eda_graph.compile()
 
 # img = eda.get_graph().draw_mermaid_png()

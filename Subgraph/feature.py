@@ -1,40 +1,19 @@
 from dotenv import load_dotenv
 from langgraph.graph import StateGraph, START, END
-from typing import Literal, Optional
-from langchain_core.messages import SystemMessage, ToolMessage
+from typing import Literal
+from langchain_core.messages import SystemMessage, ToolMessage, HumanMessage
 from langchain_deepseek import ChatDeepSeek
+from langgraph.prebuilt import ToolNode
 from langchain_core.tools import tool
 import polars as pl
-from enum import Enum
 from langgraph.types import Command
 
 from Class.AgentState import AgentState
+from Class.EngineeringAction import EngineeringAction, EncodingType, BinningType
 
 load_dotenv()
 
 llm = ChatDeepSeek(model="deepseek-v4-flash")
-
-class EncodingType(str, Enum):
-    LABEL = "label_encoding" 
-    ORDINAL = "ordinal_encoding"
-    FREQUENCY = "frequency_encoding"
-    ONE_HOT = "one_hot_encoding"
-
-class BinningType(str, Enum):
-    EQUAL = "equal_width" 
-    QUANTILE = "quantile"
-    STANDARD = "standardize"
-
-class EngineeringAction():
-    file_path: str
-    file_format: str
-    reason: str
-    column: str
-    rows_affected: Optional[int] = None
-    rows_ratio: Optional[float] = None
-    risk_level: Optional[Literal["low", "medium", "high"]] = None
-    actionType: EncodingType | BinningType
-    n_bin: int=10,
 
 def get_lf(file_path: str, file_format: str):
     if file_format == "csv":
@@ -90,17 +69,17 @@ def preview_encoding_tool(file_path: str, file_format: str, column: str, encode:
         )   
     elif encode == 'one_hot_encoding':
         encoded_df = df.to_dummies(columns=[column])
-
     
-    res = f"""
-        Encoding Action Completed:
-        - Target Column: '{column}'
-        - Method Applied: {encode}
-        - New DataFrame Glimpse (First f{length} rows):
-        {encoded_df}
-    """
+    res = {
+        "Target Column": column,
+        "Method": encode,
+        f"First {length} rows": encoded_df
+    }
     
-    return res
+    return Command(update={
+        "preview_feature": res,
+        "messages": [ToolMessage(content="Encoding complete" + str(res, tool_call_id=""))]
+    })
 
 @tool
 def preview_binning_standard_tool(file_path: str, file_format: str, column: str, encode: BinningType, n_bin: int=10, length: int=20) -> str:
@@ -154,42 +133,64 @@ def preview_binning_standard_tool(file_path: str, file_format: str, column: str,
                 .alias(f"{column}_binned")
             )
     
-    res = f"""
-        Binning Action Completed:
-        - Target Column: '{column}'
-        - Method Applied: {encode}
-        - New DataFrame Glimpse (First {length} rows):
-        {new_df}
-    """
+    res = {
+        "Target Column": column,
+        "Method": encode,
+        f"First {length} rows": new_df
+    }
     
-    return res
+    return Command(update={
+        "preview_feature": res,
+        "messages": [ToolMessage(content="Binning/Standardize complete " + str(res, tool_call_id=""))]
+    })
     
 
 feature_tools = [preview_encoding_tool, preview_binning_standard_tool]
+tool_node = ToolNode(feature_tools)
 feature_llm = llm.bind_tools(tools=feature_tools)
 feature_tools_dict = {feature_tool.name: feature_tool for feature_tool in feature_tools}
 
 def feature_agent_node(state: AgentState):
-    messages = state['messages']
-    system_prompt = SystemMessage(
-        content="""
-        You are a data feature engineering INVESTIGATION agent. You do NOT execute any cleaning action.
-        Required procedure:
-        1. Call encoding tool for categorical column and preview column(s) head after encoded 
-        2. Call standardization and binning tool for numerical column and preview column(s) head 
-        after standardized / binned 
-        3. Once you have enough information, stop calling tools and summarize your findings to 
-        match the format of EngineeringAction class, convert this to a JSON object and recommended action in plain text 
-        — a separate step will convert this into a structured action.
-        """
-    )
-    response = feature_llm.invoke([system_prompt] + messages)
+    response = feature_llm.invoke(state['messages'])
     return {'messages': [response]} 
 
 def propose_action_node(state: AgentState) -> AgentState:
+    messages = state['messages']
+    existing_actions = state.get('pending_cleaning', [])
+    covered_cols = [[a.column, a.actionType] for a in existing_actions]
+    system_prompt = SystemMessage(
+    content="""
+        You are a data feature engineering INVESTIGATION agent. You do NOT execute any transformation 
+        action.
+        Required procedure:
+        1. Call the encoding tool for categorical columns and preview the column(s) head after encoding; 
+        call the standardization or binning tool for numerical columns and preview the column(s) head 
+        after transformation.
+        2. Look at the actions already covered in 'Already proposed actions' below — do NOT propose 
+        an action for a (column, actionType) pair that already has one, unless explicitly asked to redo it.
+        3. Pick exactly ONE remaining column/transformation with the most impactful unresolved issue 
+        and propose a single EngineeringAction for it.
+        4. If every column has already been adequately transformed, or there is nothing further worth 
+        proposing, return a JSON object with "actionType": "NONE" to signal completion.
+        """
+    )
     structured_llm = llm.with_structured_output(EngineeringAction, method='json_mode')
-    action = structured_llm.invoke(state["messages"])
-    return Command(update={"pending_action": action})
+    res = structured_llm.invoke(
+        [system_prompt] + messages + [HumanMessage(content=(
+            f"Already proposed actions (column, actionType): {covered_cols}\n\n"
+            'Summarize as JSON matching schema for ONE action only:\n'
+            '{"file_path": str, "file_format": str, "reason": str, "column": str, "actionType": str, ...}'
+        ))]
+    )
+
+    summary = "\n".join(f"- {a.column}: {a.actionType}" for a in existing_actions)
+    if res.actionType == "NONE":
+        return Command(update={"engineer_done": True})
+
+    return Command(update={
+        "pending_cleaning": existing_actions + [res],
+        "messages": [HumanMessage(content=summary)]
+    })
 
 def take_action_feature(state:AgentState) -> AgentState:
     tool_calls = state['messages'][-1].tool_calls
@@ -214,9 +215,14 @@ def route_tool_or_finish(state) -> Literal["feature_tools", "propose_action"]:
         return "feature_tools"
     return "propose_action"
 
+def route_after_propose(state: AgentState) -> Literal["propose_action", END]: #type:ignore
+    if state.get("cleaning_done"):
+        return END
+    return "propose_action" 
+
 feature_graph = StateGraph(AgentState)
 feature_graph.add_node('feature_agent', feature_agent_node)
-feature_graph.add_node('feature_tools', take_action_feature)
+feature_graph.add_node('feature_tools', ToolNode)
 feature_graph.add_node('propose_action', propose_action_node)
 
 feature_graph.add_edge(START, 'feature_agent')
@@ -228,7 +234,14 @@ feature_graph.add_conditional_edges(
         'propose_action': 'propose_action'
     }
 )
-feature_graph.add_edge('propose_action', END)
+feature_graph.add_conditional_edges(
+    "propose_action",
+    route_after_propose,
+    {
+        "propose_action": "propose_action",
+        "END": END,
+    },
+)
 feature_graph.add_edge("feature_tools", "feature_agent")
 
 feature_engineering = feature_graph.compile()

@@ -4,12 +4,10 @@ from langgraph.graph import StateGraph, START, END
 from typing import List, TypedDict, Literal
 from langchain_core.messages import BaseMessage, SystemMessage, HumanMessage
 from langchain_deepseek import ChatDeepSeek
-from langchain_core.tools import tool
-from langgraph.prebuilt import ToolNode, tools_condition
-import polars as pl
-from langgraph.types import interrupt, Command
+from langgraph.types import Command
 import uuid
 from datetime import datetime
+from langgraph.checkpoint.memory import InMemorySaver
 
 from Class.AgentState import AgentState
 from Subgraph.eda import eda
@@ -104,6 +102,9 @@ def route_after_review(state:AgentState) -> Literal["executor", "validation", "s
         return "validation"         
     return "executor"   
 
+checkpointer = InMemorySaver()
+thread_config = {"configurable":{"thread_id": uuid.uuid4()}}
+
 graph = StateGraph(AgentState)
 
 graph.add_node('supervisor', supervisor_node)
@@ -139,18 +140,19 @@ graph.add_conditional_edges(
     },
 )
 
-app = graph.compile()
+app = graph.compile(checkpointer=checkpointer)
 
 # img = app.get_graph().draw_mermaid_png()
 # with open('graph_image.png', 'wb') as f:
 #     f.write(img)
 
-user_input = input("Enter: ")
-while user_input.lower() != 'exit':
-    for event in app.stream({'messages': [HumanMessage(content=user_input)]}):
-        for node_name, node_state in event.items():
-            print(f"\n--- Output from {node_name} ---")
-            last_message = node_state['messages'][-1]
-            print(last_message.content if last_message.content else "[Tool Call]")
-            
+if __name__ == "__main__":
     user_input = input("Enter: ")
+    while user_input.lower() != 'exit':
+        for event in app.stream({'messages': [HumanMessage(content=user_input)]}, config=thread_config):
+            for node_name, node_state in event.items():
+                print(f"\n--- Output from {node_name} ---")
+                last_message = node_state['messages'][-1]
+                print(last_message.content if last_message.content else "[Tool Call]")
+                
+        user_input = input("Enter: ")

@@ -2,13 +2,12 @@ from langchain_core.messages import SystemMessage
 from langchain_core.tools import tool
 import polars as pl
 from langgraph.types import interrupt
-import logging
+from langgraph.checkpoint.memory import InMemorySaver
 
 from Class.AgentState import AgentState
 from Subgraph.cleaning import CleaningAction, CleaningActionType
 from Subgraph.feature import EngineeringAction, EncodingType, BinningType
 
-logger = logging.getLogger(__name__)
 
 @tool
 def apply_cleaning_tool(action: CleaningAction, skip_confirm: bool, output_path: str) -> str:
@@ -184,7 +183,7 @@ def executor_node(state: AgentState) -> dict:
             raise TypeError(f"Unsupported action type for executor: {type(action).__name__}")
 
     except Exception as e:
-        logger.error(f"[executor] Failed to execute action: {e}")
+        print(f"[executor] Failed to execute action: {e} \n")
         result = f"EXECUTION_FAILED: {e}"
         fallback_used = True
     

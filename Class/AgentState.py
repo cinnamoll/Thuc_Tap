@@ -2,6 +2,10 @@ from typing import Annotated, Sequence, List, Optional, TypedDict, Dict
 from langchain_core.messages import BaseMessage
 from operator import add as add_messages
 
+from CleaningAction import CleaningAction
+from EDAInsight import EDAInsight
+from EngineeringAction import EngineeringAction
+
 class AgentState(TypedDict):
     messages: Annotated[Sequence[BaseMessage], add_messages]
     cols: Optional[List[str]]
@@ -11,10 +15,18 @@ class AgentState(TypedDict):
     run_id:str
     check_start:bool
     dataset_profile: dict
-    univariate = Optional[dict]
+    univariate: Optional[dict]
+
+    pending_cleaning: List[CleaningAction]
+    pending_insight: List[EDAInsight]
+    pending_engineer: List[EngineeringAction]
+    preview_feature: Optional[list]
+    
+    cleaning_done: bool=False
+    eda_done: bool=False
+    engineer_done: bool=False
     
     risk_level: Optional[str]
-    pending_action: Optional[str]
     computed_impact: Optional[float]
     validation: Optional[bool]
     retry_count: Optional[int]
