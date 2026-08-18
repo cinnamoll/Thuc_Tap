@@ -2,12 +2,22 @@ from langchain_core.messages import SystemMessage
 from langchain_core.tools import tool
 import polars as pl
 from langgraph.types import interrupt
-from langgraph.checkpoint.memory import InMemorySaver
 
 from Class.AgentState import AgentState
-from Subgraph.cleaning import CleaningAction, CleaningActionType
-from Subgraph.feature import EngineeringAction, EncodingType, BinningType
+from Class.CleaningAction import CleaningAction, CleaningActionType
+from Class.EDAInsight import EDAInsight
+from Class.EngineeringAction import EngineeringAction, EncodingType, BinningType
 
+def get_lf(file_path: str, file_format: str):
+    if file_format == "csv":
+        lf = pl.scan_csv(file_path)
+    elif file_format == "parquet":
+        lf = pl.scan_parquet(file_path)
+    elif file_format == "json":
+        lf = pl.scan_ndjson(file_path)
+    else:
+        raise ValueError(f"Don't support {file_format}")
+    return lf
 
 @tool
 def apply_cleaning_tool(action: CleaningAction, skip_confirm: bool, output_path: str) -> str:
@@ -16,18 +26,7 @@ def apply_cleaning_tool(action: CleaningAction, skip_confirm: bool, output_path:
     Only call this tool after clearly identifying the problem via profile_dataset.
     This tool will pause and wait for user confirmation before actually overwriting the data.
     """
-    if not skip_confirm:
-        decision = interrupt({
-            "type": "confirm_cleaning",
-            "column": action.column,
-            "action": action.actionType,
-            "message": f"Use'{action.actionType}' on '{action.column}'? (approve/reject/edit)",
-        })
-
-        if decision.get("decision") == "reject":
-            return f"Cancel '{action}' on '{action.column}'"
-
-    lf = pl.scan_file(action.file_path, action.file_format)
+    lf = get_lf(action.file_path, action.file_format)
 
     if action.actionType == CleaningActionType.DROP_ROWS:
         lf = lf.drop_nulls(subset=[action.column])
@@ -57,23 +56,8 @@ def encoding_tool(action: EngineeringAction, skip_confirm: bool, output_path:str
 
     Returns:
         - New Encoded columns
-    """
-    
-    if not skip_confirm:
-        decision = interrupt({
-            "type": "confirm_encoding",
-            "column": action.column,
-            "action": action.actionType,
-            "message": f"Use'{action.actionType}' on '{action.column}'? (approve/reject/edit)",
-        })
-
-        if decision.get("decision") == "reject":
-            return f"Cancel '{action}' on '{action.column}'"
-
-        if decision.get("decision") == "edit":
-            action = decision.get("new_action", action)
-        
-    lf = pl.scan_file(action.file_path, action.file_format)
+    """        
+    lf = get_lf(action.file_path, action.file_format)
         
     if action.actionType == EncodingType.FREQUENCY:
         lf = lf.with_columns((pl.len().over(action.column) / pl.len()).alias(f'{action.column}_encoded'))
@@ -113,22 +97,7 @@ def binning_standardizing_tool(action: EngineeringAction, skip_confirm: bool, ou
     Returns:
         - A new Binned column
     """
-    
-    if not skip_confirm:
-        decision = interrupt({
-            "type": "confirm_binning",
-            "column": action.column,
-            "action": action.actionType,
-            "message": f"Use'{action.actionType}' on '{action.column}'? (approve/reject/edit)",
-        })
-
-        if decision.get("decision") == "reject":
-            return f"Cancel '{action}' on '{action.column}'"
-
-        if decision.get("decision") == "edit":
-            action = decision.get("new_action", action)
-        
-    lf = pl.scan_csv(action.file_path)
+    lf = get_lf(action.file_path, action.file_format)
     df = lf.select(pl.col(action.column)).collect()
     
     if action.actionType == BinningType.STANDARD:
@@ -153,32 +122,75 @@ def binning_standardizing_tool(action: EngineeringAction, skip_confirm: bool, ou
     elif action.actionType == BinningType.QUANTILE:
         new_df = df.with_columns(
                 pl.col(action.column)
-                .qcut(df[action.column].n_bin, allow_duplicates=True)
+                .qcut(action.n_bin, allow_duplicates=True) 
                 .alias(f"{action.column}_binned")
             )
         
+    new_df.write_csv(output_path)    
+    
     with pl.Config(tbl_rows=5, tbl_cols=6):
         sample_str = str(new_df.head(5))
     
     return f"Use '{action}' on '{action.column}', save at {output_path}. Output head: {sample_str}"
 
 def executor_node(state: AgentState) -> dict:
-    action = state["pending_action"]
-    skip_confirm = True if action.risk_level == "low" else False
+    action_type = state.get('action_type')
+    if action_type == 'cleaning':
+        action = state['pending_cleaning'][-1]
+    elif action_type == 'engineering':
+        action = state['pending_engineering'][-1]
+    elif action_type == 'insight': 
+        action = state['pending_insight'][-1] 
+    else:
+        raise ValueError(f"Unsupported action_type: {action_type}")
+        
+    act_type = getattr(action, "actionType", "eda_insight")
+    action_id = f"{action.column}_{act_type}"
+    reviewed = state.get("reviewed_actions") or []
+    output_path = state.get('output_path') or f"output_{action_type}.csv"
+
+    skip_confirm = True if (getattr(action, "risk_level", "low") == "low" or action_id in reviewed) else False 
     fallback_used = False
+
+    if not skip_confirm:
+        action_payload = action.model_dump(mode="json") if hasattr(action, "model_dump") else str(action)
+        act_type_val = getattr(action.actionType, "value", str(action.actionType)) if hasattr(action, "actionType") else "eda_insight"
+
+        decision = interrupt({
+            "type": "confirm_action",
+            "column": action.column,
+            "actionType": act_type_val,
+            "action": action_payload,
+            "message": f"Use '{act_type_val}' on '{action.column}'? (approve/reject/edit)",
+        })
+
+        if decision.get("decision") == "reject":
+            return {"action_res": f"Cancel '{action}' on '{action.column}'", "skip_confirm": skip_confirm, "fallback_used": False}
+
+        if decision.get("decision") == "edit":
+            new_act_data = decision.get("new_action")
+            if isinstance(new_act_data, dict):
+                if action_type == 'cleaning':
+                    action = CleaningAction.model_validate(new_act_data)
+                elif action_type == 'engineering':
+                    action = EngineeringAction.model_validate(new_act_data)
+                elif action_type == 'insight':
+                    action = EDAInsight.model_validate(new_act_data)
+            elif new_act_data:
+                action = new_act_data
 
     try:
         if isinstance(action, CleaningAction):
-            result = apply_cleaning_tool.invoke({"action": action, "skip_confirm": skip_confirm, "output_path": state['output_path']})
-
+            result = apply_cleaning_tool.invoke({"action": action, "skip_confirm": skip_confirm, "output_path": output_path})
         elif isinstance(action, EngineeringAction):
             if isinstance(action.actionType, EncodingType):
-                result = encoding_tool.invoke({"action": action, "skip_confirm": skip_confirm, "output_path": state['output_path']})
+                result = encoding_tool.invoke({"action": action, "skip_confirm": skip_confirm, "output_path": output_path})
             elif isinstance(action.actionType, BinningType):
-                result = binning_standardizing_tool.invoke({"action": action, "skip_confirm": skip_confirm, "output_path": state['output_path']})
+                result = binning_standardizing_tool.invoke({"action": action, "skip_confirm": skip_confirm, "output_path": output_path})
             else:
                 raise TypeError(f"Unsupported EngineeringAction.actionType: {type(action.actionType).__name__}")
-        
+        elif isinstance(action, EDAInsight):  
+            result = f"EDA Insight recorded for column '{action.column}' with metrics: {action.metric_value}" 
         else:
             raise TypeError(f"Unsupported action type for executor: {type(action).__name__}")
 
@@ -195,22 +207,51 @@ def executor_node(state: AgentState) -> dict:
     }
     
 def review_execution_node(state: AgentState):
-    action = state['pending_action']
+    action_type = state.get('action_type')
+    if action_type in ['cleaning', 'engineering', 'insight']:
+        action = state[f'pending{action_type}'][-1]
+    else:
+        raise ValueError(f"Unsupported action_type: {action_type}")
+
     result = state["action_res"]
 
+    action_payload = action.model_dump(mode="json") if hasattr(action, "model_dump") else str(action)
     decision = interrupt({
         "type": "review_output",
-        "action": str(action),
-        "result": result,
+        "action": action_payload,
+        "result": str(result),
         "message": "Bạn có hài lòng với kết quả này không? (accept/retry/abort)",
     })
     choice = decision.get("decision", "accept")
 
     if choice == "retry":
         edited_action = decision.get("new_action") 
+        update_dict = {}
+        if edited_action:
+            if isinstance(edited_action, dict):
+                if action_type == 'cleaning':
+                    edited_action = CleaningAction.model_validate(edited_action)
+                elif action_type == 'engineering':
+                    edited_action = EngineeringAction.model_validate(edited_action)
+                elif action_type == 'insight':
+                    edited_action = EDAInsight.model_validate(edited_action)
+
+            if action_type == 'cleaning':
+                new_list = list(state['pending_cleaning'])
+                new_list[-1] = edited_action
+                update_dict = {"pending_cleaning": new_list}
+            elif action_type == 'engineering':
+                new_list = list(state['pending_engineering'])
+                new_list[-1] = edited_action
+                update_dict = {"pending_engineering": new_list}
+            elif action_type == 'insight': 
+                new_list = list(state['pending_insight']) 
+                new_list[-1] = edited_action 
+                update_dict = {"pending_insight": new_list} 
+
         return {
             "review_decision": "retry",
-            "pending_action": edited_action or action,
+            **update_dict,
             "retry_count": state.get("retry_count", 0) + 1,
         }
 
@@ -226,7 +267,6 @@ def review_execution_node(state: AgentState):
     
     return {
         "completed_actions": record,
-        "pending_action": None,
         "retry_count": 0,
         "review_decision": status
     }

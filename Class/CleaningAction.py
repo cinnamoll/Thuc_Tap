@@ -20,7 +20,7 @@ class CleaningAction(BaseModel):
     rows_ratio: Optional[float] = None
     risk_level: Optional[Literal["low", "medium", "high"]] = None
     actionType: CleaningActionType
-    target_dtype: str
+    target_dtype: Optional[str] = None
 
     @field_validator("target_dtype")
     @classmethod

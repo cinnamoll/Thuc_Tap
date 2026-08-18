@@ -1,5 +1,4 @@
 from dotenv import load_dotenv
-import os
 from langgraph.graph import StateGraph, START, END
 from typing import List, TypedDict, Literal
 from langchain_core.messages import BaseMessage, SystemMessage, HumanMessage
@@ -8,6 +7,7 @@ from langgraph.types import Command
 import uuid
 from datetime import datetime
 from langgraph.checkpoint.memory import InMemorySaver
+import json
 
 from Class.AgentState import AgentState
 from Subgraph.eda import eda
@@ -60,12 +60,11 @@ SUPERVISOR_PROMPT = """
     return "FINISH" (which maps to the `__end__` node).
 """
 
-def supervisor_node(state: AgentState) -> Command[Literal["cleaning", "eda", "feature_engineering", "review", "generate_report", END]]: #type:ignore
+def supervisor_node(state: AgentState) -> Command[Literal["cleaning", "eda", "feature_engineering", "generate_report", "__end__"]]:
     check = state.get('check_start', True)
-    if check == True:
-        run_id = f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:6]}"
-        state['run_id'] = run_id
-        state["check_start"] = False
+    run_id = state.get('run_id', '') 
+    if check == True: 
+        run_id = f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:6]}" 
 
     llm_router = llm.with_structured_output(RouteDecision, method='json_mode')
 
@@ -85,20 +84,36 @@ def supervisor_node(state: AgentState) -> Command[Literal["cleaning", "eda", "fe
     if goto == "FINISH":
         goto = END
 
+    action_type = None
+    if goto == "cleaning":
+        action_type = "cleaning"
+    elif goto == "feature_engineering":
+        action_type = "engineering"
+    elif goto == "eda":
+        action_type = "insight"
+
+    update_dict = {  
+        "run_id": run_id, 
+        "check_start": False, 
+        "messages": [HumanMessage(content=f"[Supervisor] -> { decision['next']}: { decision['reason']}")],
+    }
+    if action_type:
+        update_dict["action_type"] = action_type
+
     return Command(
         goto=goto,
-        update={
-            "next_step": decision['next'],
-            "messages": [HumanMessage(content=f"[Supervisor] -> { decision['next']}: { decision['reason']}")],
-        },
+        update=update_dict,
     )
     
 def route_after_review(state:AgentState) -> Literal["executor", "validation", "supervisor"]:
     if state["review_decision"] != "retry":
         return "supervisor"
     if state.get("retry_count", 0) >= 3:
-        return "supervisor"         
-    if state.get("current_action") != state.get("pending_action"):
+        return "supervisor"      
+    action = state['action_type']   
+    pending = state.get(f"pending_{action}", []) 
+    current = state.get("current_action") 
+    if pending and current and str(current) != str(pending[-1]): 
         return "validation"         
     return "executor"   
 
@@ -117,6 +132,11 @@ graph.add_node("review", review_execution_node)
 graph.add_node('generate_report', generate_report_node)
 graph.add_node('build_report', build_report_file_node)
 
+def route_after_validation(state: AgentState) -> Literal["executor", "supervisor"]:
+    if state.get("action_status") is False:
+        return "supervisor"
+    return "executor"
+
 graph.add_edge(START, 'supervisor')
 # graph.add_edge('supervisor', 'cleaning')
 # graph.add_edge('supervisor', 'eda')
@@ -124,9 +144,17 @@ graph.add_edge(START, 'supervisor')
 graph.add_edge('cleaning', 'validation')
 graph.add_edge('eda', 'validation')
 graph.add_edge('feature_engineering', 'validation')
-graph.add_edge('validation', "executor")
+
+graph.add_conditional_edges(
+    "validation",
+    route_after_validation,
+    {
+        "executor": "executor",
+        "supervisor": "supervisor",
+    },
+)
+
 graph.add_edge("executor", "review")
-graph.add_edge("review", "generate_report")
 graph.add_edge("generate_report", "build_report")
 graph.add_edge("build_report", END)
 
@@ -147,12 +175,57 @@ app = graph.compile(checkpointer=checkpointer)
 #     f.write(img)
 
 if __name__ == "__main__":
-    user_input = input("Enter: ")
-    while user_input.lower() != 'exit':
-        for event in app.stream({'messages': [HumanMessage(content=user_input)]}, config=thread_config):
+    def handle_stream(input_data):
+        for event in app.stream(input_data, config=thread_config):
             for node_name, node_state in event.items():
-                print(f"\n--- Output from {node_name} ---")
-                last_message = node_state['messages'][-1]
-                print(last_message.content if last_message.content else "[Tool Call]")
-                
-        user_input = input("Enter: ")
+                if node_name == "__interrupt__":
+                    print("\nWorkflow Interrupted for Human Input]")
+                    continue
+                print(f"\n Output from {node_name}")
+                if isinstance(node_state, dict):
+                    msgs = node_state.get('messages', [])  
+                    if msgs: 
+                        last_message = msgs[-1] 
+                        content = getattr(last_message, 'content', None)
+                        print(content if content else "[Tool Call / Output]") 
+                    else: 
+                        print(f"[{node_name}] Executed")
+
+    while True:
+        state_snapshot = app.get_state(thread_config)
+        
+        if state_snapshot.next and any(task.interrupts for task in state_snapshot.tasks):
+            task = next(t for t in state_snapshot.tasks if t.interrupts)
+            interrupt_val = task.interrupts[0].value
+            
+            print("\nINTERRUPT REQUIRED")
+            if isinstance(interrupt_val, dict):
+                print(json.dumps(interrupt_val, indent=2, ensure_ascii=False))
+            else:
+                print(f"Payload: {interrupt_val}")
+            
+            req_type = interrupt_val.get("type", "") if isinstance(interrupt_val, dict) else ""
+            
+            if req_type == "human_review_request":
+                ans = input("Approve this action? (y/n): ").strip().lower()
+                decision = {"approved": ans.startswith("y")}
+            elif req_type == "confirm_action":
+                ans = input("Enter decision (approve/reject/edit): ").strip().lower()
+                decision = {"decision": ans if ans in ["approve", "reject", "edit"] else "accept", "new_action": []}
+            elif req_type == "review_output":
+                ans = input("Enter decision (accept/retry/abort): ").strip().lower()
+                decision = {"decision": ans if ans in ["accept", "retry", "abort"] else "accept"}
+            else:
+                ans = input("Enter resume response (or y/n): ").strip().lower()
+                decision = {"approved": ans.startswith("y")}
+
+            print(f"Resuming graph with Command(resume={decision})")
+            handle_stream(Command(resume=decision))
+        else:
+            user_input = input("\nEnter prompt (or 'exit' to quit): ").strip()
+            if user_input.lower() == 'exit':
+                break
+            if not user_input:
+                continue
+            
+            handle_stream({'messages': [HumanMessage(content=user_input)]})

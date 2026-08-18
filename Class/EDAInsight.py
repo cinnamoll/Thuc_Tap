@@ -1,11 +1,7 @@
 from pydantic import BaseModel
-from typing import Optional
+from typing import Optional, Dict, Annotated, List
 
 class EDAInsight(BaseModel):
-    file_path: str
-    file_format: str
     column: str
-    metric_name: str
-    value: float
-    n_rows: int
-    chart_path: Optional[str] = None
+    metric_value: Annotated[Dict[str, float], "str is the metric name, float is its value"]
+    chart_paths: Optional[List[str]] = None 

@@ -1,10 +1,10 @@
 from dotenv import load_dotenv
 from langgraph.graph import StateGraph, START, END
-from typing import Literal
+from typing import Literal, Annotated
 from langchain_core.messages import SystemMessage, ToolMessage, HumanMessage
 from langchain_deepseek import ChatDeepSeek
 from langgraph.prebuilt import ToolNode
-from langchain_core.tools import tool
+from langchain_core.tools import tool, InjectedToolCallId
 import polars as pl
 from langgraph.types import Command
 
@@ -27,7 +27,7 @@ def get_lf(file_path: str, file_format: str):
     return lf
 
 @tool 
-def preview_encoding_tool(file_path: str, file_format: str, column: str, encode: EncodingType, length: int=20) -> str:
+def preview_encoding_tool(file_path: str, file_format: str, column: str, encode: EncodingType, tool_call_id: Annotated[str, InjectedToolCallId], length: int=20) -> str:
     """
     Apply this tool only to categorical data columns to encoding:
     Args:
@@ -68,7 +68,9 @@ def preview_encoding_tool(file_path: str, file_format: str, column: str, encode:
             pl.col(column).replace(mapping, default=None).cast(pl.Int32).alias(f'{column}_encoded')
         )   
     elif encode == 'one_hot_encoding':
-        encoded_df = df.to_dummies(columns=[column])
+        encoded_df = df.to_dummies(columns=[column])     
+    else: 
+        return "Unsupported encode type"   
     
     res = {
         "Target Column": column,
@@ -78,11 +80,11 @@ def preview_encoding_tool(file_path: str, file_format: str, column: str, encode:
     
     return Command(update={
         "preview_feature": res,
-        "messages": [ToolMessage(content="Encoding complete" + str(res, tool_call_id=""))]
+        "messages": [ToolMessage(content="Encoding complete " + str(res), tool_call_id=tool_call_id)]
     })
 
 @tool
-def preview_binning_standard_tool(file_path: str, file_format: str, column: str, encode: BinningType, n_bin: int=10, length: int=20) -> str:
+def preview_binning_standard_tool(file_path: str, file_format: str, column: str, encode: BinningType, tool_call_id: Annotated[str, InjectedToolCallId], n_bin: int=10, length: int=20) -> str:
     """
     Apply this tool only to continuos data columns to binned / standardized:
         - Use result from univariate_analyst_ as input to suggest encoding plans
@@ -132,6 +134,8 @@ def preview_binning_standard_tool(file_path: str, file_format: str, column: str,
                 .qcut(n_bin, allow_duplicates=True)
                 .alias(f"{column}_binned")
             )
+    else: 
+        return "Unsupported binning type" 
     
     res = {
         "Target Column": column,
@@ -141,7 +145,7 @@ def preview_binning_standard_tool(file_path: str, file_format: str, column: str,
     
     return Command(update={
         "preview_feature": res,
-        "messages": [ToolMessage(content="Binning/Standardize complete " + str(res, tool_call_id=""))]
+        "messages": [ToolMessage(content="Binning/Standardize complete " + str(res), tool_call_id=tool_call_id)]
     })
     
 
@@ -156,7 +160,7 @@ def feature_agent_node(state: AgentState):
 
 def propose_action_node(state: AgentState) -> AgentState:
     messages = state['messages']
-    existing_actions = state.get('pending_cleaning', [])
+    existing_actions = state.get('pending_engineering', [])
     covered_cols = [[a.column, a.actionType] for a in existing_actions]
     system_prompt = SystemMessage(
     content="""
@@ -176,19 +180,22 @@ def propose_action_node(state: AgentState) -> AgentState:
     )
     structured_llm = llm.with_structured_output(EngineeringAction, method='json_mode')
     res = structured_llm.invoke(
-        [system_prompt] + messages + [HumanMessage(content=(
-            f"Already proposed actions (column, actionType): {covered_cols}\n\n"
-            'Summarize as JSON matching schema for ONE action only:\n'
-            '{"file_path": str, "file_format": str, "reason": str, "column": str, "actionType": str, ...}'
-        ))]
+        [system_prompt] + messages + [HumanMessage(content=
+            f"""Already proposed actions (column, actionType): {covered_cols}
+            Summarize as JSON matching schema for ONE action only:
+            {{"reason": str, "column": str, "rows_affected": int | null, "rows_ratio": float | null,
+                "risk_level": "low" | "medium" | "high" | null, "actionType": str, "n_bin": int}}\n
+            Preview the column for user using {state['preview_feature']}
+            """
+        )]
     )
 
     summary = "\n".join(f"- {a.column}: {a.actionType}" for a in existing_actions)
-    if res.actionType == "NONE":
+    if res.actionType in (EncodingType.NONE, BinningType.NONE): 
         return Command(update={"engineer_done": True})
 
     return Command(update={
-        "pending_cleaning": existing_actions + [res],
+        "pending_engineering": existing_actions + [res],
         "messages": [HumanMessage(content=summary)]
     })
 
@@ -215,14 +222,14 @@ def route_tool_or_finish(state) -> Literal["feature_tools", "propose_action"]:
         return "feature_tools"
     return "propose_action"
 
-def route_after_propose(state: AgentState) -> Literal["propose_action", END]: #type:ignore
-    if state.get("cleaning_done"):
+def route_after_propose(state: AgentState) -> Literal["feature_agent", END]: #type:ignore
+    if state.get("engineer_done"):
         return END
-    return "propose_action" 
+    return "feature_agent" 
 
 feature_graph = StateGraph(AgentState)
 feature_graph.add_node('feature_agent', feature_agent_node)
-feature_graph.add_node('feature_tools', ToolNode)
+feature_graph.add_node('feature_tools', tool_node) 
 feature_graph.add_node('propose_action', propose_action_node)
 
 feature_graph.add_edge(START, 'feature_agent')
@@ -238,8 +245,8 @@ feature_graph.add_conditional_edges(
     "propose_action",
     route_after_propose,
     {
-        "propose_action": "propose_action",
-        "END": END,
+        "feature_agent": "feature_agent",
+        END: END,
     },
 )
 feature_graph.add_edge("feature_tools", "feature_agent")

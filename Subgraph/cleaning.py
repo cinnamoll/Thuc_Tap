@@ -1,20 +1,20 @@
 from dotenv import load_dotenv
 from langgraph.graph import StateGraph, START, END
-from typing import Literal
+from typing import Literal, Annotated
 from langchain_core.messages import SystemMessage, ToolMessage, HumanMessage
 from langchain_deepseek import ChatDeepSeek
-from langchain_core.tools import tool
+from langchain_core.tools import tool, InjectedToolCallId
 from langgraph.prebuilt import ToolNode 
 import polars as pl
 from langgraph.types import Command
 from Class.AgentState import AgentState
-from Class.CleaningAction import CleaningAction
+from Class.CleaningAction import CleaningAction, CleaningActionType
 load_dotenv()
 
 llm = ChatDeepSeek(model="deepseek-v4-flash")
 
 @tool
-def profile_dataset(file_path:str, file_format:str) -> dict:
+def profile_dataset(file_path: str, file_format: str, tool_call_id: Annotated[str, InjectedToolCallId]) -> dict:
     """
     Scan a dataset (lazy, not loading the entire dataset into RAM) and return statistics:
     dtypes, number of nulls for both numerical and categorical columns and unique values for categorical column.
@@ -44,7 +44,7 @@ def profile_dataset(file_path:str, file_format:str) -> dict:
 
     return Command(update={
         "dataset_profile": res,
-        "messages": [ToolMessage(content=str(res, tool_call_id=""))]
+        "messages": [ToolMessage(content=str(res), tool_call_id=tool_call_id)] 
     })
 
 cleaning_tools = [profile_dataset]
@@ -76,17 +76,17 @@ def propose_action_node(state: AgentState) -> AgentState:
     structured_llm = llm.with_structured_output(CleaningAction, method='json_mode')
     res = structured_llm.invoke(
         [system_prompt] + 
-        HumanMessage(content=f"Dataset profile (pre-computed): {state['dataset_profile']}") + 
-        messages + [HumanMessage(content=(
-            f"Already proposed actions (columns covered): {covered_cols}\n"
-            'Summarize as JSON matching schema for ONE action only:\n'
-            '{"file_path": str, "file_format": str, "reason": str, "column": str, '
-            '"rows_affected": int|null, "rows_ratio": float|null, '
-            '"risk_level": "low"|"medium"|"high"|null, "actionType": str, "target_dtype": str}'
-        ))]
+        [HumanMessage(content=f"Dataset profile (pre-computed): {state['dataset_profile']}")] + 
+        messages + [HumanMessage(content=
+            f"""Already proposed actions (columns covered): {covered_cols}
+            Summarize as JSON matching schema for ONE action only:
+            {{"reason": str, "column": str, "rows_affected": int|null, "rows_ratio": float|null, 
+            "risk_level": "low"|"medium"|"high"|null, "actionType": str, "target_dtype": str}}
+            """
+        )]
     )
     summary = "\n".join(f"- {a.column}: {a.actionType}" for a in existing_actions)
-    if res.actionType == "NONE":
+    if res.actionType == CleaningActionType.NONE:
         return Command(update={"cleaning_done": True})
 
     return Command(update={
@@ -100,10 +100,10 @@ def route_tool_or_finish(state) -> Literal["cleaning_tools", "propose_action"]:
         return "cleaning_tools"
     return "propose_action"
 
-def route_after_propose(state: AgentState) -> Literal["propose_action", END]: #type:ignore
+def route_after_propose(state: AgentState) -> Literal["cleaning_agent", END]: #type:ignore
     if state.get("cleaning_done") == True:
         return END
-    return "propose_action" 
+    return "cleaning_agent" 
 
 cleaning_graph = StateGraph(AgentState)
 cleaning_graph.add_node('cleaning_agent', data_cleaning_node)
@@ -123,8 +123,8 @@ cleaning_graph.add_conditional_edges(
     "propose_action",
     route_after_propose,
     {
-        "propose_action": "propose_action",
-        "END": END,
+        "cleaning_agent": "cleaning_agent",
+        END: END,
     },
 )
 cleaning_graph.add_edge("cleaning_tools", "cleaning_agent")

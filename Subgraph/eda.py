@@ -1,12 +1,11 @@
 from dotenv import load_dotenv
 from langgraph.graph import StateGraph, START, END
-from typing import List, Optional, Literal
+from typing import List, Optional, Literal, Annotated
 from langchain_core.messages import SystemMessage, ToolMessage, HumanMessage
 from langchain_deepseek import ChatDeepSeek
-from langchain_core.tools import tool
-from langgraph.prebuilt import ToolNode, tools_condition
+from langchain_core.tools import tool, InjectedToolCallId
+from langgraph.prebuilt import ToolNode
 import polars as pl
-from pydantic import BaseModel
 import matplotlib.pyplot as plt
 import seaborn as sns
 from langgraph.types import Command
@@ -30,7 +29,7 @@ def get_lf(file_path: str, file_format: str):
     return lf
 
 @tool
-def univariate_analyst_numeric(file_path: str, file_format:str, column: str) -> str:
+def univariate_analyst_numeric(file_path: str, file_format: str, column: str, tool_call_id: Annotated[str, InjectedToolCallId]) -> str:
     """
     Apply this tool only to numeric data columns to extract statistical analysis containing:
         - Measures central tendency (mean, median) to find the typical value.
@@ -113,10 +112,10 @@ def univariate_analyst_numeric(file_path: str, file_format:str, column: str) -> 
         "upper_bound": round(upper_bound, 4)
     }
     
-    return Command(update={"univariate": res, "messages": [ToolMessage(content=str(res))]})
+    return Command(update={"univariate": res, "messages": [ToolMessage(content=str(res), tool_call_id=tool_call_id)]})
     
 @tool
-def univariate_analyst_cat(file_path: str, file_format:str, column: str) -> str:
+def univariate_analyst_cat(file_path: str, file_format: str, column: str, tool_call_id: Annotated[str, InjectedToolCallId]) -> str:
     """
     Apply this tool only to nominal data columns to extract statistical analysis containing:
         - Unique column values, mode, count of distinct categories, count of null values in our variable
@@ -190,10 +189,10 @@ def univariate_analyst_cat(file_path: str, file_format:str, column: str) -> str:
         "mode": mode_str
     }
     
-    return Command(update={"univariate": res,"messages": [ToolMessage(content=str(res))]})
+    return Command(update={"univariate": res,"messages": [ToolMessage(content=str(res), tool_call_id=tool_call_id)]})
  
 @tool
-def draw_graph(file_path: str, file_format: str, cols: List[str]) -> str:
+def draw_graph(file_path: str, file_format: str, cols: List[str], tool_call_id: Annotated[str, InjectedToolCallId]) -> str:
     """
     Apply this tool to draw graph for user using columns name and dataset file_path.
 
@@ -255,13 +254,17 @@ def draw_graph(file_path: str, file_format: str, cols: List[str]) -> str:
             plt.title(f"Bubble chart: X={num_cols[0]}, Y={num_cols[1]}, Size={num_cols[2]}")
 
     plt.tight_layout()
+    temp = "" 
     for col in cols:
         temp += (col + ' ')
     file_name = f"{temp}_eda_output.png"
     plt.savefig(file_name)
     plt.close()
     
-    return Command(update={"chart_paths": [file_name], "messages": [ToolMessage(content=f"Graph successfully drawn and saved at {file_name}")]})
+    return Command(update={
+        "chart_paths": [file_name], 
+        "messages": [ToolMessage(content=f"Graph successfully drawn and saved at {file_name}", tool_call_id=tool_call_id)]
+    })
     
 eda_tools = [univariate_analyst_numeric, univariate_analyst_cat, draw_graph]
 tool_node = ToolNode(eda_tools)
@@ -275,7 +278,7 @@ def eda_agent_node(state: AgentState):
 def propose_insight_node(state: AgentState) -> AgentState:
     messages = state['messages']
     existing_actions = state.get('pending_insight', [])
-    covered_cols = [[a.column, a.metric_name] for a in existing_actions]
+    covered_cols = [[a.column, a.metric_value] for a in existing_actions]
     system_prompt = SystemMessage(
     content="""
         You are an Exploratory Data Analysis (EDA) INSIGHT agent. You do NOT execute any data 
@@ -296,18 +299,22 @@ def propose_insight_node(state: AgentState) -> AgentState:
     structured_llm = llm.with_structured_output(EDAInsight, method="json_mode")
     res = structured_llm.invoke(
         [system_prompt] + messages + [HumanMessage(content=(
-            f"Already proposed insights: {covered_cols}\n"
-            'Summarize as JSON matching schema for ONE insight only:\n'
-            '{"metric_name": str, "value": float, "n_rows": int, "chart_path": str|null}'
+            f"""Already proposed insights: {covered_cols}\n
+            Summarize as JSON matching schema for ONE column with metric_name and value appended to metric_value dict only.\n
+            {"column":str, "metric_value":Dict[str:float]}
+            """
         ))]
     )
 
-    summary = "\n".join(f"- {a.column}: {a.actionType}" for a in existing_actions)
-    if res.actionType == "NONE":
+    summary = "\n".join(f"- {a.column}: {list(a.metric_value.keys())}" for a in existing_actions) 
+    if list(res.metric_value.keys()) == ["NONE"]:
         return Command(update={"eda_done": True})
 
+    if state.get("chart_paths") and not res.chart_paths:
+        res.chart_paths = state.get("chart_paths") 
+
     return Command(update={
-        "pending_cleaning": existing_actions + [res],
+        "pending_insight": existing_actions + [res],  
         "messages": [HumanMessage(content=summary)]
     })
 
@@ -317,10 +324,10 @@ def route_tool_or_finish(state) -> Literal["eda_tools", 'propose_insight']:
         return "eda_tools"
     return 'propose_insight'
 
-def route_after_propose(state: AgentState) -> Literal["propose_insight", END]: #type:ignore
-    if state.get("insight_done") == True:
+def route_after_propose(state: AgentState) -> Literal["eda_agent", END]: #type:ignore
+    if state.get("eda_done") == True:
         return END
-    return "propose_insight" 
+    return "eda_agent" 
 
 eda_graph = StateGraph(AgentState)
 eda_graph.add_node('eda_agent', eda_agent_node)
@@ -340,8 +347,8 @@ eda_graph.add_conditional_edges(
     "propose_insight",
     route_after_propose,
     {
-        "propose_insight": "propose_insight",
-        "END": END,
+        "eda_agent": "eda_agent",
+        END: END,
     },
 )
 eda_graph.add_edge("eda_tools", "eda_agent")
