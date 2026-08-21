@@ -1,6 +1,6 @@
 from dotenv import load_dotenv
 from langgraph.graph import StateGraph, START, END
-from typing import List, Optional, Literal, Annotated
+from typing import List, Literal, Annotated
 from langchain_core.messages import SystemMessage, ToolMessage, HumanMessage
 from langchain_deepseek import ChatDeepSeek
 from langchain_core.tools import tool, InjectedToolCallId
@@ -9,10 +9,12 @@ import polars as pl
 import matplotlib.pyplot as plt
 import seaborn as sns
 from langgraph.types import Command
+import matplotlib
 
 from Class.AgentState import AgentState
 from Class.EDAInsight import EDAInsight
 
+matplotlib.use('Agg') 
 load_dotenv()
 
 llm = ChatDeepSeek(model="deepseek-v4-flash")
@@ -112,7 +114,7 @@ def univariate_analyst_numeric(file_path: str, file_format: str, column: str, to
         "upper_bound": round(upper_bound, 4)
     }
     
-    return Command(update={"univariate": res, "messages": [ToolMessage(content=str(res), tool_call_id=tool_call_id)]})
+    return Command(update={"univariate": [res], "messages": [ToolMessage(content=str(res), tool_call_id=tool_call_id)]})
     
 @tool
 def univariate_analyst_cat(file_path: str, file_format: str, column: str, tool_call_id: Annotated[str, InjectedToolCallId]) -> str:
@@ -189,7 +191,7 @@ def univariate_analyst_cat(file_path: str, file_format: str, column: str, tool_c
         "mode": mode_str
     }
     
-    return Command(update={"univariate": res,"messages": [ToolMessage(content=str(res), tool_call_id=tool_call_id)]})
+    return Command(update={"univariate": [res],"messages": [ToolMessage(content=str(res), tool_call_id=tool_call_id)]})
  
 @tool
 def draw_graph(file_path: str, file_format: str, cols: List[str], tool_call_id: Annotated[str, InjectedToolCallId]) -> str:
@@ -205,6 +207,10 @@ def draw_graph(file_path: str, file_format: str, cols: List[str], tool_call_id: 
     lf = get_lf(file_path, file_format)
     schema = lf.collect_schema()
     
+    invalid_cols = [c for c in cols if c not in schema.names()]
+    if invalid_cols:
+        return Command(update={"messages": [ToolMessage(content=f"Columns {invalid_cols} not found in dataset schema. Valid columns: {list(schema.names())}", tool_call_id=tool_call_id)]})
+
     NUMERIC_TYPES = (pl.Int8, pl.Int16, pl.Int32, pl.Int64, pl.Float32, pl.Float64, 
                      pl.UInt8, pl.UInt16, pl.UInt32, pl.UInt64)
     CAT_TYPES = (pl.Categorical, pl.String, pl.Enum)
@@ -279,29 +285,41 @@ def propose_insight_node(state: AgentState) -> AgentState:
     messages = state['messages']
     existing_actions = state.get('pending_insight', [])
     covered_cols = [[a.column, a.metric_value] for a in existing_actions]
+    file_path = state.get('file_path', '')
+    file_format = state.get('file_format', 'csv')
+    dataset_profile = state.get('dataset_profile', {})
+    valid_cols = dataset_profile.get('columns', [])
+    if not valid_cols and file_path:
+        try:
+            valid_cols = list(get_lf(file_path, file_format).collect_schema().names())
+        except Exception:
+            valid_cols = []
+
     system_prompt = SystemMessage(
-    content="""
+        content=f"""
         You are an Exploratory Data Analysis (EDA) INSIGHT agent. You do NOT execute any data 
         transformation or cleaning actions.
         Required procedure:
-        1. Always call the profiling or univariate tools first to understand the dataset's schema, 
+        1. Valid columns in dataset: {valid_cols}. You MUST select 'column' strictly from this list. Do NOT invent non-existent column names (e.g. 'id').
+        2. Always call the profiling or univariate tools first to understand the dataset's schema, 
         distributions, and basic statistics.
-        2. Look at the insights already covered in 'Already proposed insights' below — do NOT propose 
+        3. Look at the insights already covered in 'Already proposed insights' below — do NOT propose 
         an insight for a (column, metric) pair that already has one, unless explicitly asked to redo it.
-        3. Pick exactly ONE remaining column/metric with the most impactful unresolved insight 
+        4. Pick exactly ONE remaining column/metric with the most impactful unresolved insight 
         (central tendency, dispersion, distribution shape, correlation, etc.) and propose a single 
         EDAInsight for it, including a suggested visualization if relevant.
-        4. If every meaningful insight has already been proposed, or there is nothing further worth 
-        analyzing, return a JSON object with "metric_name": "NONE" to signal completion.
+        5. If every meaningful insight has already been proposed, return: {"column": "none", "metric_value": {"NONE": 0.0}}
         """
     )
 
     structured_llm = llm.with_structured_output(EDAInsight, method="json_mode")
     res = structured_llm.invoke(
-        [system_prompt] + messages + [HumanMessage(content=(
+        [system_prompt] + 
+        [HumanMessage(content=f"Valid dataset columns: {valid_cols}")] + 
+        messages + [HumanMessage(content=(
             f"""Already proposed insights: {covered_cols}\n
             Summarize as JSON matching schema for ONE column with metric_name and value appended to metric_value dict only.\n
-            {"column":str, "metric_value":Dict[str:float]}
+            {{"column":str, "metric_value":Dict[str:float]}}
             """
         ))]
     )

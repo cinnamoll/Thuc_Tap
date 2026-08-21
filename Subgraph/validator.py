@@ -25,9 +25,10 @@ def compute_impact_cleaning(action: CleaningAction, dataset_profile: dict) -> Cl
         CleaningAction: Updated Cleaning action
     """
     total_rows = dataset_profile.get("n_rows") 
+    stats = dataset_profile.get("stats", {})
 
     if action.actionType == CleaningActionType.DROP_ROWS:
-        affected = dataset_profile["stats"].get(f"{action.column}_nulls", 0)
+        affected = stats.get(f"{action.column}_nulls", 0)
     elif action.actionType == CleaningActionType.DROP_COLUMN:
         affected = total_rows 
     else:
@@ -46,17 +47,32 @@ def compute_impact_engineering(action: EngineeringAction, dataset_profile: dict)
         CleaningAction: Updated Engineering action
     """
     total_rows = dataset_profile.get("n_rows") 
-    null_count = dataset_profile["stats"].get(f"{action.column}_nulls", 0)
+    stats = dataset_profile.get("stats", {})
+    null_count = stats.get(f"{action.column}_nulls", 0)
 
     if action.actionType in (EncodingType.LABEL, EncodingType.ORDINAL):
         affected = null_count
     elif action.actionType == EncodingType.ONE_HOT:
-        affected = dataset_profile["stats"].get(f"{action.column}_nunique", 0)
+        affected = stats.get(f"{action.column}_nunique", 0)
     elif action.actionType in (BinningType.EQUAL, BinningType.QUANTILE): 
         affected = null_count  
     else:
         affected = 0
     return {"rows_affected": affected, "rows_ratio": affected / total_rows if total_rows else 0.0}
+
+def get_valid_columns(state: AgentState) -> list:
+    dp_cols = state.get('dataset_profile', {}).get('columns', [])
+    if dp_cols:
+        return dp_cols
+    file_path = state.get('file_path')
+    file_format = state.get('file_format', 'csv')
+    if file_path:
+        try:
+            from Subgraph.executor import get_lf
+            return list(get_lf(file_path, file_format).collect_schema().names())
+        except Exception:
+            pass
+    return []
 
 def compute_impact_node(state: AgentState) -> dict:
     dataset_profile = state.get('dataset_profile', {})
@@ -67,7 +83,7 @@ def compute_impact_node(state: AgentState) -> dict:
             impact = compute_impact_cleaning.invoke({"action": action, "dataset_profile": dataset_profile})
             calculated.append({"column": action.column, "actionType": action.actionType, **impact})
     elif state['action_type'] == 'engineering':
-        actions = state.get("pending_engineer", [])
+        actions = state.get("pending_engineering", [])
         for action in actions:
             impact = compute_impact_engineering.invoke({"action": action, "dataset_profile": dataset_profile})
             calculated.append({"column": action.column, "actionType": action.actionType, **impact})
@@ -104,11 +120,23 @@ def validator_node(state: AgentState) -> dict:
     else: 
         actions = [] 
         
+    valid_cols = get_valid_columns(state)
+
     for action in actions:
         try:
             type(action).model_validate(action.model_dump())
         except ValidationError:
             return {"validation": False, "validation_error": "schema_invalid"}
+
+        act_type = getattr(action, "actionType", None)
+        if act_type == CleaningActionType.NONE or act_type == EncodingType.NONE or act_type == BinningType.NONE:
+            continue
+
+        if valid_cols and action.column and action.column not in valid_cols:
+            return {
+                "validation": False,
+                "validation_error": f"Column '{action.column}' does not exist in dataset. Valid columns: {valid_cols}"
+            }
 
         if isinstance(action, EDAInsight): 
             continue 
@@ -173,13 +201,24 @@ def human_review_node(state: AgentState) -> dict:
         "dataset_preview": str(state.get('preview_feature', "")) if state['action_type'] == 'engineering' else ""
     })
 
-    if not isinstance(decision, dict):
-        return {
-            "pending_question": f"Invalid decision payload for {target_id}",
-            "reviewed_actions": reviewed
-        }
+    is_approved = False
+    if isinstance(decision, str):
+        is_approved = decision.strip().lower() in ["approve", "approved", "accept", "accepted", "yes", "y", "true", "1"]
+    elif isinstance(decision, bool):
+        is_approved = decision
+    elif isinstance(decision, dict):
+        val = decision.get("approved")
+        if val is None:
+            val = decision.get("decision")
+        if val is None:
+            val = decision.get("choice")
+        if isinstance(val, bool):
+            is_approved = val
+        elif isinstance(val, str):
+            is_approved = val.strip().lower() in ["approve", "approved", "accept", "accepted", "yes", "y", "true", "1"]
+        elif isinstance(val, (int, float)):
+            is_approved = bool(val)
 
-    is_approved = decision.get("approved", False) or decision.get("decision") == "approve"
     if is_approved:
         reviewed.append(target_id)
         return {"action_status": True, "reviewed_actions": reviewed, "pending_question": None}

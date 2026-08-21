@@ -26,38 +26,24 @@ class RouteDecision(TypedDict):
     reason: str 
 
 SUPERVISOR_PROMPT = """
-    You are the Supervisor coordinating a data analysis pipeline. You have the ability to route tasks to the following workers/nodes:
-    - cleaning: Handles binning, encoding processing, and general data cleaning.
-    - eda: Handles Univariate Analysis, Multivariate Analysis, and Charting.
-    - feature_engineering: Handles feature transformation, creation, and selection.
-    - generate_report: Generates a comprehensive report based on the analysis.
-    - build_report: Compiles and builds the final report document.
+    You are the Supervisor coordinating a data analysis pipeline. You MUST route tasks in strict graph sequence:
+    `cleaning` -> `eda` -> `feature_engineering` -> `generate_report`
+
+    **Sequential Order Rules:**
+    1. Step 1: `cleaning` (Binning, encoding, null handling, casting, and data cleaning).
+    2. Step 2: `eda` (Univariate Analysis, Multivariate Analysis, and Charting).
+    3. Step 3: `feature_engineering` (Feature transformation, creation, encoding, and selection).
+    4. Step 4: `generate_report` (Generates the final comprehensive report).
 
     **Workflow Context:** 
-    When you delegate to `cleaning`, `eda`, or `feature_engineering`, you only trigger the start of that process. 
-    Their outputs will automatically flow through a downstream pipeline (`validation` -> `executor` -> `review`). 
-    You do not need to manually trigger validation, execution, or review.
+    When you delegate to `cleaning`, `eda`, or `feature_engineering`, you trigger that pipeline stage.
+    Their outputs will automatically flow through a downstream pipeline (`validation` -> `executor` -> `review`).
+    After downstream execution completes, control returns to you to proceed to the next stage in sequence.
 
-    Your primary directive is to respect the user's explicit intent and the graph structure:
+    Do not skip stages or terminate prematurely until all stages are complete.
 
-    1. Check User Intent First: 
-    - ONLY EXECUTE THE ACTION THE USER REQUESTED IF THE ACTION BELONGS IN ["cleaning", "eda", "feature_engineering"]
-    AND ASK USER FOR VALIDATION 
-
-    2. Wait for Confirmation & Graph Flow:
-    - Stop and return "FINISH" after you delegate a task. The system will handle the downstream execution (`validation`, `executor`, `review`) 
-    and will allow the user to review the output before returning to you for the next step.
-
-    3. Avoid Repetition:
-    - Do not repeat a step that is already in the completed steps list unless the user explicitly asks to run it again.
-
-    4.Respond with a JSON object matching this schema:\n"
-        '{"next": "cleaning" | "eda" | "feature_engineering" | "review" | "generate_report" | "FINISH", '
-        '"reason": "<string>"}'
-
-    5. Terminate when done:
-    - If no further actions are requested or required by the user's prompt, or if the pipeline workflow is complete, 
-    return "FINISH" (which maps to the `__end__` node).
+    Respond with a JSON object matching this schema:
+    {"next": "cleaning" | "eda" | "feature_engineering" | "generate_report" | "FINISH", "reason": "<string>"}
 """
 
 def supervisor_node(state: AgentState) -> Command[Literal["cleaning", "eda", "feature_engineering", "generate_report", "__end__"]]:
@@ -66,20 +52,30 @@ def supervisor_node(state: AgentState) -> Command[Literal["cleaning", "eda", "fe
     if check == True: 
         run_id = f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:6]}" 
 
-    llm_router = llm.with_structured_output(RouteDecision, method='json_mode')
-
-    messages = [
-        SystemMessage(content=SUPERVISOR_PROMPT),
-        *state.get("messages", []),
-        HumanMessage(content=(
-            f"Metadata dataset:\n{state.get('metadata')}\n"
-            f"Completed steps: {state.get('completed_actions', [])}\n" 
-            "Proceed to next step"
-        ))
-    ]
-    
-    decision = llm_router.invoke(messages)
-    goto = decision["next"]
+    # Enforce graph sequence: cleaning -> eda -> feature_engineering -> generate_report
+    if not state.get("cleaning_done"):
+        goto = "cleaning"
+        reason = "Sequence rule: cleaning step required first."
+    elif not state.get("eda_done"):
+        goto = "eda"
+        reason = "Sequence rule: eda step required after cleaning."
+    elif not state.get("engineer_done"):
+        goto = "feature_engineering"
+        reason = "Sequence rule: feature_engineering step required after eda."
+    else:
+        llm_router = llm.with_structured_output(RouteDecision, method='json_mode')
+        messages = [
+            SystemMessage(content=SUPERVISOR_PROMPT),
+            *state.get("messages", []),
+            HumanMessage(content=(
+                f"Metadata dataset:\n{state.get('metadata')}\n"
+                f"Completed steps: {state.get('completed_actions', [])}\n" 
+                "Proceed to next step"
+            ))
+        ]
+        decision = llm_router.invoke(messages)
+        goto = decision.get("next", "generate_report")
+        reason = decision.get("reason", "Proceeding to next step")
     
     if goto == "FINISH":
         goto = END
@@ -95,7 +91,7 @@ def supervisor_node(state: AgentState) -> Command[Literal["cleaning", "eda", "fe
     update_dict = {  
         "run_id": run_id, 
         "check_start": False, 
-        "messages": [HumanMessage(content=f"[Supervisor] -> { decision['next']}: { decision['reason']}")],
+        "messages": [HumanMessage(content=f"[Supervisor] -> {goto}: {reason}")],
     }
     if action_type:
         update_dict["action_type"] = action_type
@@ -207,17 +203,35 @@ if __name__ == "__main__":
             req_type = interrupt_val.get("type", "") if isinstance(interrupt_val, dict) else ""
             
             if req_type == "human_review_request":
-                ans = input("Approve this action? (y/n): ").strip().lower()
-                decision = {"approved": ans.startswith("y")}
+                ans = input("Approve this action? (approve/reject or y/n): ").strip().lower()
+                is_approved = ans in ["approve", "approved", "accept", "accepted", "y", "yes", "1"] or ans.startswith("y")
+                decision = {"decision": "approve" if is_approved else "reject", "approved": is_approved}
             elif req_type == "confirm_action":
                 ans = input("Enter decision (approve/reject/edit): ").strip().lower()
-                decision = {"decision": ans if ans in ["approve", "reject", "edit"] else "accept", "new_action": []}
+                if ans in ["y", "yes", "approve", "approved", "accept", "1"]:
+                    ans_choice = "approve"
+                elif ans in ["n", "no", "reject", "rejected", "0"]:
+                    ans_choice = "reject"
+                elif ans in ["edit"]:
+                    ans_choice = "edit"
+                else:
+                    ans_choice = "approve"
+                decision = {"decision": ans_choice, "new_action": []}
             elif req_type == "review_output":
-                ans = input("Enter decision (accept/retry/abort): ").strip().lower()
-                decision = {"decision": ans if ans in ["accept", "retry", "abort"] else "accept"}
+                ans = input("Enter decision (approve/retry/abort): ").strip().lower()
+                if ans in ["approve", "approved", "accept", "accepted", "y", "yes", "1"]:
+                    ans_choice = "approve"
+                elif ans in ["retry", "edit"]:
+                    ans_choice = "retry"
+                elif ans in ["abort", "reject", "no", "n", "0"]:
+                    ans_choice = "abort"
+                else:
+                    ans_choice = "approve"
+                decision = {"decision": ans_choice}
             else:
-                ans = input("Enter resume response (or y/n): ").strip().lower()
-                decision = {"approved": ans.startswith("y")}
+                ans = input("Enter resume response (approve/reject or y/n): ").strip().lower()
+                is_approved = ans in ["approve", "approved", "accept", "accepted", "y", "yes", "1"] or ans.startswith("y")
+                decision = {"decision": "approve" if is_approved else "reject", "approved": is_approved}
 
             print(f"Resuming graph with Command(resume={decision})")
             handle_stream(Command(resume=decision))

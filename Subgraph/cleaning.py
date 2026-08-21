@@ -60,31 +60,49 @@ def propose_action_node(state: AgentState) -> AgentState:
     messages = state['messages']
     existing_actions = state.get('pending_cleaning', [])
     covered_cols = [a.column for a in existing_actions]
+    file_path = state.get('file_path', '')
+    file_format = state.get('file_format', 'csv')
+    dataset_profile = state.get('dataset_profile', {})
+    valid_cols = dataset_profile.get('columns', [])
+    if not valid_cols and file_path:
+        try:
+            valid_cols = list(pl.scan_csv(file_path).collect_schema().names()) if file_format == 'csv' else []
+        except Exception:
+            valid_cols = []
+
     system_prompt = SystemMessage(
-        content="""
+        content=f"""
         You are a data cleaning INVESTIGATION agent. You do NOT execute any cleaning action.
         Required procedure:
-        1. Always call profile_dataset first to understand the dataset's problems.
-        2. Look at the columns already covered in 'Already proposed actions' below — do NOT propose 
+        1. Always profile dataset first.
+        2. Valid dataset columns: {valid_cols}. You MUST select 'column' strictly from this list. Do NOT invent non-existent column names (e.g. 'id').
+        3. Look at the columns already covered in 'Already proposed actions' below — do NOT propose 
         an action for a column that already has one, unless explicitly asked to redo it.
-        3. Pick exactly ONE remaining column with the most severe unresolved problem 
+        4. Pick exactly ONE remaining column with the most severe unresolved problem 
         (nulls, wrong dtype, etc.) and propose a single CleaningAction for it.
-        4. If every problematic column already has a proposed action, or there are no more issues 
-        to address, return a JSON object with "actionType": "NONE" to signal completion.
+        5. If every problematic column already has a proposed action, or there are no more issues 
+        to address, return a JSON object with "actionType": "none" to signal completion.
+        
+        Valid actionType values: "drop_rows", "impute_median", "impute_mean", "impute_mode", "cast_dtype", "drop_column", "none"
         """
     )
     structured_llm = llm.with_structured_output(CleaningAction, method='json_mode')
     res = structured_llm.invoke(
         [system_prompt] + 
-        [HumanMessage(content=f"Dataset profile (pre-computed): {state['dataset_profile']}")] + 
+        [HumanMessage(content=f"Dataset profile (pre-computed): {dataset_profile}\nValid dataset columns: {valid_cols}")] + 
         messages + [HumanMessage(content=
             f"""Already proposed actions (columns covered): {covered_cols}
             Summarize as JSON matching schema for ONE action only:
-            {{"reason": str, "column": str, "rows_affected": int|null, "rows_ratio": float|null, 
-            "risk_level": "low"|"medium"|"high"|null, "actionType": str, "target_dtype": str}}
+            {{"file_path": "{file_path}", "file_format": "{file_format}", "reason": str, "column": str, "rows_affected": int|null, "rows_ratio": float|null, 
+            "risk_level": "low"|"medium"|"high"|null, "actionType": "drop_rows"|"impute_median"|"impute_mean"|"impute_mode"|"cast_dtype"|"drop_column"|"none", "target_dtype": str|null}}
             """
         )]
     )
+    if not res.file_path:
+        res.file_path = file_path
+    if not res.file_format:
+        res.file_format = file_format
+
     summary = "\n".join(f"- {a.column}: {a.actionType}" for a in existing_actions)
     if res.actionType == CleaningActionType.NONE:
         return Command(update={"cleaning_done": True})

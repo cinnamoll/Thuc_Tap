@@ -162,33 +162,52 @@ def propose_action_node(state: AgentState) -> AgentState:
     messages = state['messages']
     existing_actions = state.get('pending_engineering', [])
     covered_cols = [[a.column, a.actionType] for a in existing_actions]
+    file_path = state.get('file_path', '')
+    file_format = state.get('file_format', 'csv')
+    dataset_profile = state.get('dataset_profile', {})
+    valid_cols = dataset_profile.get('columns', [])
+    if not valid_cols and file_path:
+        try:
+            valid_cols = list(pl.scan_csv(file_path).collect_schema().names()) if file_format == 'csv' else []
+        except Exception:
+            valid_cols = []
+
     system_prompt = SystemMessage(
-    content="""
+        content=f"""
         You are a data feature engineering INVESTIGATION agent. You do NOT execute any transformation 
         action.
         Required procedure:
-        1. Call the encoding tool for categorical columns and preview the column(s) head after encoding; 
+        1. Valid columns in dataset: {valid_cols}. You MUST select 'column' strictly from this list. Do NOT invent non-existent column names (e.g. 'id').
+        2. Call the encoding tool for categorical columns and preview the column(s) head after encoding; 
         call the standardization or binning tool for numerical columns and preview the column(s) head 
         after transformation.
-        2. Look at the actions already covered in 'Already proposed actions' below — do NOT propose 
+        3. Look at the actions already covered in 'Already proposed actions' below — do NOT propose 
         an action for a (column, actionType) pair that already has one, unless explicitly asked to redo it.
-        3. Pick exactly ONE remaining column/transformation with the most impactful unresolved issue 
+        4. Pick exactly ONE remaining column/transformation with the most impactful unresolved issue 
         and propose a single EngineeringAction for it.
-        4. If every column has already been adequately transformed, or there is nothing further worth 
-        proposing, return a JSON object with "actionType": "NONE" to signal completion.
+        5. If every column has already been adequately transformed, or there is nothing further worth 
+        proposing, return a JSON object with "actionType": "none" to signal completion.
+        
+        Valid actionType values: "label_encoding", "ordinal_encoding", "frequency_encoding", "one_hot_encoding", "equal_width", "quantile", "standardize", "none"
         """
     )
     structured_llm = llm.with_structured_output(EngineeringAction, method='json_mode')
     res = structured_llm.invoke(
-        [system_prompt] + messages + [HumanMessage(content=
+        [system_prompt] + 
+        [HumanMessage(content=f"Valid dataset columns: {valid_cols}")] + 
+        messages + [HumanMessage(content=
             f"""Already proposed actions (column, actionType): {covered_cols}
             Summarize as JSON matching schema for ONE action only:
-            {{"reason": str, "column": str, "rows_affected": int | null, "rows_ratio": float | null,
-                "risk_level": "low" | "medium" | "high" | null, "actionType": str, "n_bin": int}}\n
-            Preview the column for user using {state['preview_feature']}
+            {{"file_path": "{file_path}", "file_format": "{file_format}", "reason": str, "column": str, "rows_affected": int | null, "rows_ratio": float | null,
+                "risk_level": "low" | "medium" | "high" | null, "actionType": "label_encoding"|"ordinal_encoding"|"frequency_encoding"|"one_hot_encoding"|"equal_width"|"quantile"|"standardize"|"none", "n_bin": int}}\n
+            Preview the column for user using {state.get('preview_feature', '')}
             """
         )]
     )
+    if not res.file_path:
+        res.file_path = file_path
+    if not res.file_format:
+        res.file_format = file_format
 
     summary = "\n".join(f"- {a.column}: {a.actionType}" for a in existing_actions)
     if res.actionType in (EncodingType.NONE, BinningType.NONE): 

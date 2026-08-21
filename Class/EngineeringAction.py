@@ -16,12 +16,19 @@ class BinningType(str, Enum):
     NONE = "none"
 
 class EngineeringAction(BaseModel):
-    file_path: str
-    file_format: str
-    reason: str
-    column: str
+    file_path: Optional[str] = None
+    file_format: Optional[str] = None
+    reason: Optional[str] = ""
+    column: Optional[str] = ""
     rows_affected: Optional[int] = None
     rows_ratio: Optional[float] = None
     risk_level: Optional[Literal["low", "medium", "high"]] = None
     actionType: EncodingType | BinningType
     n_bin: int=10
+
+    @field_validator("column", "reason", mode="before")
+    @classmethod
+    def convert_none_to_str(cls, v):
+        if v is None:
+            return ""
+        return v

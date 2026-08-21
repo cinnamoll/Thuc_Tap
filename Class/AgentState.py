@@ -1,6 +1,7 @@
 from typing import Annotated, Sequence, List, Optional, TypedDict, Literal, Union
 from langchain_core.messages import BaseMessage
 from operator import add as add_messages
+import operator
 
 from Class.CleaningAction import CleaningAction
 from Class.EDAInsight import EDAInsight
@@ -16,7 +17,7 @@ class AgentState(TypedDict):
     run_id:str
     check_start:bool
     dataset_profile: dict
-    univariate: Optional[dict]
+    univariate: Annotated[List[dict], operator.add]
     
     action_type: Literal['cleaning', 'engineering', 'insight']
     pending_cleaning: List[CleaningAction]

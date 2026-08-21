@@ -27,6 +27,9 @@ def apply_cleaning_tool(action: CleaningAction, skip_confirm: bool, output_path:
     This tool will pause and wait for user confirmation before actually overwriting the data.
     """
     lf = get_lf(action.file_path, action.file_format)
+    schema = lf.collect_schema()
+    if action.column not in schema.names():
+        raise ValueError(f"Column '{action.column}' not found in dataset. Valid columns: {list(schema.names())}")
 
     if action.actionType == CleaningActionType.DROP_ROWS:
         lf = lf.drop_nulls(subset=[action.column])
@@ -58,6 +61,9 @@ def encoding_tool(action: EngineeringAction, skip_confirm: bool, output_path:str
         - New Encoded columns
     """        
     lf = get_lf(action.file_path, action.file_format)
+    schema = lf.collect_schema()
+    if action.column not in schema.names():
+        raise ValueError(f"Column '{action.column}' not found in dataset. Valid columns: {list(schema.names())}")
         
     if action.actionType == EncodingType.FREQUENCY:
         lf = lf.with_columns((pl.len().over(action.column) / pl.len()).alias(f'{action.column}_encoded'))
@@ -98,6 +104,10 @@ def binning_standardizing_tool(action: EngineeringAction, skip_confirm: bool, ou
         - A new Binned column
     """
     lf = get_lf(action.file_path, action.file_format)
+    schema = lf.collect_schema()
+    if action.column not in schema.names():
+        raise ValueError(f"Column '{action.column}' not found in dataset. Valid columns: {list(schema.names())}")
+
     df = lf.select(pl.col(action.column)).collect()
     
     if action.actionType == BinningType.STANDARD:
@@ -164,11 +174,29 @@ def executor_node(state: AgentState) -> dict:
             "message": f"Use '{act_type_val}' on '{action.column}'? (approve/reject/edit)",
         })
 
-        if decision.get("decision") == "reject":
+        dec_str = "approve"
+        new_act_data = None
+
+        if isinstance(decision, str):
+            dec_str = decision.strip().lower()
+        elif isinstance(decision, bool):
+            dec_str = "approve" if decision else "reject"
+        elif isinstance(decision, dict):
+            val = decision.get("decision")
+            if val is None:
+                val = decision.get("approved")
+            if val is None:
+                val = decision.get("choice")
+            if isinstance(val, bool):
+                dec_str = "approve" if val else "reject"
+            elif isinstance(val, str):
+                dec_str = val.strip().lower()
+            new_act_data = decision.get("new_action")
+
+        if dec_str in ["reject", "rejected", "no", "n", "false"]:
             return {"action_res": f"Cancel '{action}' on '{action.column}'", "skip_confirm": skip_confirm, "fallback_used": False}
 
-        if decision.get("decision") == "edit":
-            new_act_data = decision.get("new_action")
+        if dec_str in ["edit", "retry"]:
             if isinstance(new_act_data, dict):
                 if action_type == 'cleaning':
                     action = CleaningAction.model_validate(new_act_data)
@@ -209,7 +237,7 @@ def executor_node(state: AgentState) -> dict:
 def review_execution_node(state: AgentState):
     action_type = state.get('action_type')
     if action_type in ['cleaning', 'engineering', 'insight']:
-        action = state[f'pending{action_type}'][-1]
+        action = state[f'pending_{action_type}'][-1]
     else:
         raise ValueError(f"Unsupported action_type: {action_type}")
 
@@ -220,12 +248,36 @@ def review_execution_node(state: AgentState):
         "type": "review_output",
         "action": action_payload,
         "result": str(result),
-        "message": "Bạn có hài lòng với kết quả này không? (accept/retry/abort)",
+        "message": "Bạn có hài lòng với kết quả này không? (approve/retry/abort)",
     })
-    choice = decision.get("decision", "accept")
+    dec_str = "approve"
+    new_act_data = None
+
+    if isinstance(decision, str):
+        dec_str = decision.strip().lower()
+    elif isinstance(decision, bool):
+        dec_str = "approve" if decision else "abort"
+    elif isinstance(decision, dict):
+        val = decision.get("decision")
+        if val is None:
+            val = decision.get("approved")
+        if val is None:
+            val = decision.get("choice")
+        if isinstance(val, bool):
+            dec_str = "approve" if val else "abort"
+        elif isinstance(val, str):
+            dec_str = val.strip().lower()
+        new_act_data = decision.get("new_action")
+
+    if dec_str in ["retry", "edit"]:
+        choice = "retry"
+    elif dec_str in ["abort", "reject", "cancel", "no", "n", "false"]:
+        choice = "abort"
+    else:
+        choice = "accept"
 
     if choice == "retry":
-        edited_action = decision.get("new_action") 
+        edited_action = new_act_data 
         update_dict = {}
         if edited_action:
             if isinstance(edited_action, dict):
@@ -255,7 +307,7 @@ def review_execution_node(state: AgentState):
             "retry_count": state.get("retry_count", 0) + 1,
         }
 
-    status = "accepted" if choice == "accept" else "rejected"
+    status = "accepted" if choice == "approve" else "rejected"
     
     record = SystemMessage(
         content=(
@@ -266,7 +318,7 @@ def review_execution_node(state: AgentState):
     )
     
     return {
-        "completed_actions": record,
+        "completed_actions": [record],
         "retry_count": 0,
         "review_decision": status
     }
