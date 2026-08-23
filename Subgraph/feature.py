@@ -168,7 +168,7 @@ def propose_action_node(state: AgentState) -> AgentState:
     valid_cols = dataset_profile.get('columns', [])
     if not valid_cols and file_path:
         try:
-            valid_cols = list(pl.scan_csv(file_path).collect_schema().names()) if file_format == 'csv' else []
+            valid_cols = list(get_lf(file_path, file_format).collect_schema().names()) if file_format == 'csv' else []
         except Exception:
             valid_cols = []
 
@@ -217,23 +217,6 @@ def propose_action_node(state: AgentState) -> AgentState:
         "pending_engineering": existing_actions + [res],
         "messages": [HumanMessage(content=summary)]
     })
-
-def take_action_feature(state:AgentState) -> AgentState:
-    tool_calls = state['messages'][-1].tool_calls
-    results = []
-    for t in tool_calls:        
-        if not t['name'] in feature_tools_dict: 
-            print(f"\nTool: {t['name']} does not exist.")
-            result = "Incorrect Tool Name, Please Retry and Select tool from List of Available tools."
-        
-        else:
-            result = feature_tools_dict[t['name']].invoke(t['args'])
-            print(f"Result length: {len(str(result))}")
-            
-        results.append(ToolMessage(tool_call_id=t['id'], name=t['name'], content=str(result)))
-
-    print("Tools Execution Complete. Back to the supervisor!")
-    return {'messages': results}
 
 def route_tool_or_finish(state) -> Literal["feature_tools", "propose_action"]: 
     last_msg = state["messages"][-1]

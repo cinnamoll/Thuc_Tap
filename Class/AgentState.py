@@ -8,6 +8,19 @@ from Class.EDAInsight import EDAInsight
 from Class.EngineeringAction import EngineeringAction
 from Class.Report import Report
 
+def dedupe_list(left: Optional[List[str]], right: Optional[List[str]]) -> List[str]:
+    if left is None:
+        return list(right or [])
+    if right is None:
+        return list(left)
+    seen = set()
+    result = []
+    for item in list(left) + list(right):
+        if item not in seen:
+            seen.add(item)
+            result.append(item)
+    return result
+
 class AgentState(TypedDict):
     messages: Annotated[Sequence[BaseMessage], add_messages]
     cols: Optional[List[str]]
@@ -24,7 +37,7 @@ class AgentState(TypedDict):
     pending_insight: List[EDAInsight]
     pending_engineering: List[EngineeringAction]
     preview_feature: Optional[list]
-    chart_paths: Annotated[List[str], add_messages] 
+    chart_paths: Annotated[List[str], dedupe_list] 
     
     cleaning_done: bool
     eda_done: bool

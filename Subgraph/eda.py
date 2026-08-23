@@ -143,15 +143,18 @@ def univariate_analyst_cat(file_path: str, file_format: str, column: str, tool_c
     
     df = lf.select(pl.col(column)).collect()
     
+    # Compute `mode` on the collected Series to stay compatible with all polars
+    # versions (mode() inside a LazyFrame select can return multiple rows and fail).
+    mode_series = df.get_column(column).drop_nulls().mode()
+    modes = mode_series.to_list()
+
     stats = lf.select([
-        pl.col(column).drop_nulls().mode().implode().alias("mode"),
         pl.col(column).drop_nulls().n_unique().alias("n_unique"),
         pl.col(column).is_not_null().sum().alias("valid_count"),
         pl.col(column).is_null().sum().alias("null_count"),
         pl.len().alias("total_count")
     ]).collect()
 
-    modes = stats.get_column("mode").item()
     n_unique = stats.get_column("n_unique").item()
     valid_count = stats.get_column("valid_count").item()
     null_count = stats.get_column("null_count").item()
@@ -177,7 +180,7 @@ def univariate_analyst_cat(file_path: str, file_format: str, column: str, tool_c
     with pl.Config(tbl_rows=null_df.height if null_df.height > 0 else 1, tbl_cols=4):
         null_str = str(null_df) if not null_df.is_empty() else "No missing values."
 
-    if modes.is_empty():
+    if not modes:
         mode_str = None
     else:
         mode_str = ', '.join(map(str, modes)) 

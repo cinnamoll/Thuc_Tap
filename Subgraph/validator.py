@@ -14,7 +14,7 @@ from Subgraph.eda import eda
 from Subgraph.feature import feature_engineering
 
 @tool
-def compute_impact_cleaning(action: CleaningAction, dataset_profile: dict) -> CleaningAction:
+def compute_impact_cleaning(action: CleaningAction, dataset_profile: dict) -> dict:
     """This tool compute risk level of cleaning action in a column
 
     Args:
@@ -22,7 +22,7 @@ def compute_impact_cleaning(action: CleaningAction, dataset_profile: dict) -> Cl
         dataset_profile (dict): metadata about the column
 
     Returns:
-        CleaningAction: Updated Cleaning action
+        dict: Rows affected and ratio computed for the cleaning action
     """
     total_rows = dataset_profile.get("n_rows") 
     stats = dataset_profile.get("stats", {})
@@ -36,15 +36,15 @@ def compute_impact_cleaning(action: CleaningAction, dataset_profile: dict) -> Cl
     return {"rows_affected": affected, "rows_ratio": affected / total_rows if total_rows else 0.0}
 
 @tool
-def compute_impact_engineering(action: EngineeringAction, dataset_profile: dict) -> EngineeringAction:
+def compute_impact_engineering(action: EngineeringAction, dataset_profile: dict) -> dict:
     """This tool compute risk level of Encoding or Binning action in a column
 
     Args:
-        action (CleaningAction): Provide what type of encoding / binning action
+        action (EngineeringAction): Provide what type of encoding / binning action
         dataset_profile (dict): metadata about the column
 
     Returns:
-        CleaningAction: Updated Engineering action
+        dict: Rows affected and ratio computed for the engineering action
     """
     total_rows = dataset_profile.get("n_rows") 
     stats = dataset_profile.get("stats", {})
@@ -129,7 +129,7 @@ def validator_node(state: AgentState) -> dict:
             return {"validation": False, "validation_error": "schema_invalid"}
 
         act_type = getattr(action, "actionType", None)
-        if act_type == CleaningActionType.NONE or act_type == EncodingType.NONE or act_type == BinningType.NONE:
+        if isinstance(action, EDAInsight) or act_type == CleaningActionType.NONE or act_type == EncodingType.NONE or act_type == BinningType.NONE:
             continue
 
         if valid_cols and action.column and action.column not in valid_cols:
@@ -137,9 +137,6 @@ def validator_node(state: AgentState) -> dict:
                 "validation": False,
                 "validation_error": f"Column '{action.column}' does not exist in dataset. Valid columns: {valid_cols}"
             }
-
-        if isinstance(action, EDAInsight): 
-            continue 
 
         computed = next((c for c in computed_list if c["column"] == action.column and c["actionType"] == action.actionType), {})
 
@@ -251,11 +248,11 @@ def deterministic_fallback_node(state: AgentState):
             res += f"Dataset preview: {state.get('preview_feature')}"
     return {"messages": [HumanMessage(content=res)], "fallback_used": True} 
 
-def route_after_propose(state):
-    pending = state.get("pending_insight", []) 
-    if isinstance(pending, list) and len(pending) > 0: 
-        return "validator" 
-    return "compute_impact" 
+# def route_after_propose(state):
+#     pending = state.get("pending_insight", []) 
+#     if isinstance(pending, list) and len(pending) > 0: 
+#         return "validator" 
+#     return "compute_impact" 
 
 def route_after_validator(state: AgentState) -> Literal["human_review", "repair", "__end__"]:
     if state.get("validation"):

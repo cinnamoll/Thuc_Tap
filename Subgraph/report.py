@@ -103,7 +103,7 @@ def build_report_file_node(state: AgentState) -> dict:
     if report.recommendation:
         lines.append(f"\n Recommendation\n{report.recommendation}")
 
-    output_path = f"BT_Thuc_Tap/example_output/report_{state['run_id']}.md"
+    output_path = f"example_output/report_{state['run_id']}.md"
     with open(output_path, "w", encoding="utf-8") as f:
         f.write("\n".join(lines))
 

@@ -1,6 +1,7 @@
 from langchain_core.messages import SystemMessage
 from langchain_core.tools import tool
 import polars as pl
+import uuid
 from langgraph.types import interrupt
 
 from Class.AgentState import AgentState
@@ -18,6 +19,16 @@ def get_lf(file_path: str, file_format: str):
     else:
         raise ValueError(f"Don't support {file_format}")
     return lf
+
+DTYPE_MAP = {
+    "int8": pl.Int8, "int16": pl.Int16, "int32": pl.Int32, "int64": pl.Int64,
+    "uint8": pl.UInt8, "uint16": pl.UInt16, "uint32": pl.UInt32, "uint64": pl.UInt64,
+    "float32": pl.Float32, "float64": pl.Float64, "float": pl.Float64, "double": pl.Float64,
+    "str": pl.String, "string": pl.String, "utf8": pl.String,
+    "bool": pl.Boolean, "boolean": pl.Boolean,
+    "date": pl.Date, "datetime": pl.Datetime, "time": pl.Time,
+    "categorical": pl.Categorical,
+}
 
 @tool
 def apply_cleaning_tool(action: CleaningAction, skip_confirm: bool, output_path: str) -> str:
@@ -40,7 +51,13 @@ def apply_cleaning_tool(action: CleaningAction, skip_confirm: bool, output_path:
     elif action.actionType == CleaningActionType.IMPUTE_MODE:
         lf = lf.with_columns(pl.col(action.column).fill_null(pl.col(action.column).mode().first()))
     elif action.actionType == CleaningActionType.CAST_DTYPE:
-        lf = lf.with_columns(pl.col(action.column).cast(getattr(pl, action.target_dtype)))
+        target_dtype = DTYPE_MAP.get(str(action.target_dtype).lower())
+        if target_dtype is None:
+            raise ValueError(
+                f"Unsupported target_dtype '{action.target_dtype}'. "
+                f"Supported dtypes: {sorted(DTYPE_MAP.keys())}"
+            )
+        lf = lf.with_columns(pl.col(action.column).cast(target_dtype))
     elif action.actionType == CleaningActionType.DROP_COLUMN:
         lf = lf.drop(action.column)
 
@@ -157,7 +174,8 @@ def executor_node(state: AgentState) -> dict:
     act_type = getattr(action, "actionType", "eda_insight")
     action_id = f"{action.column}_{act_type}"
     reviewed = state.get("reviewed_actions") or []
-    output_path = state.get('output_path') or f"output_{action_type}.csv"
+    run_id = state.get('run_id')
+    output_path = state.get('output_path') or f"output_{action_type}_{run_id}_{action.column}.csv"
 
     skip_confirm = True if (getattr(action, "risk_level", "low") == "low" or action_id in reviewed) else False 
     fallback_used = False
@@ -194,7 +212,7 @@ def executor_node(state: AgentState) -> dict:
             new_act_data = decision.get("new_action")
 
         if dec_str in ["reject", "rejected", "no", "n", "false"]:
-            return {"action_res": f"Cancel '{action}' on '{action.column}'", "skip_confirm": skip_confirm, "fallback_used": False}
+            return {"action_res": f"Cancel '{action}' on '{action.column}'", "skip_confirm": skip_confirm, "fallback_used": False, "action_status":False}
 
         if dec_str in ["edit", "retry"]:
             if isinstance(new_act_data, dict):
@@ -307,7 +325,7 @@ def review_execution_node(state: AgentState):
             "retry_count": state.get("retry_count", 0) + 1,
         }
 
-    status = "accepted" if choice == "approve" else "rejected"
+    status = "accepted" if choice == "accept" else "rejected"
     
     record = SystemMessage(
         content=(

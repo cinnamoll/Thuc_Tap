@@ -13,6 +13,17 @@ load_dotenv()
 
 llm = ChatDeepSeek(model="deepseek-v4-flash")
 
+def get_lf(file_path: str, file_format: str):
+    if file_format == "csv":
+        lf = pl.scan_csv(file_path)
+    elif file_format == "parquet":
+        lf = pl.scan_parquet(file_path)
+    elif file_format == "json":
+        lf = pl.scan_ndjson(file_path)
+    else:
+        raise ValueError(f"Don't support {file_format}")
+    return lf
+
 @tool
 def profile_dataset(file_path: str, file_format: str, tool_call_id: Annotated[str, InjectedToolCallId]) -> dict:
     """
@@ -66,7 +77,7 @@ def propose_action_node(state: AgentState) -> AgentState:
     valid_cols = dataset_profile.get('columns', [])
     if not valid_cols and file_path:
         try:
-            valid_cols = list(pl.scan_csv(file_path).collect_schema().names()) if file_format == 'csv' else []
+            valid_cols = list(get_lf(file_path, file_format).collect_schema().names())
         except Exception:
             valid_cols = []
 

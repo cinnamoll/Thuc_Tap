@@ -76,6 +76,15 @@ def supervisor_node(state: AgentState) -> Command[Literal["cleaning", "eda", "fe
         decision = llm_router.invoke(messages)
         goto = decision.get("next", "generate_report")
         reason = decision.get("reason", "Proceeding to next step")
+
+        # Enforce sequence: never let the LLM re-route to a stage that is already done,
+        # otherwise the pipeline can loop forever re-running completed subgraphs.
+        if goto == "cleaning" and state.get("cleaning_done"):
+            goto, reason = "generate_report", "cleaning already done; forcing report stage."
+        elif goto == "eda" and state.get("eda_done"):
+            goto, reason = "generate_report", "eda already done; forcing report stage."
+        elif goto == "feature_engineering" and state.get("engineer_done"):
+            goto, reason = "generate_report", "feature_engineering already done; forcing report stage."
     
     if goto == "FINISH":
         goto = END
@@ -102,7 +111,7 @@ def supervisor_node(state: AgentState) -> Command[Literal["cleaning", "eda", "fe
     )
     
 def route_after_review(state:AgentState) -> Literal["executor", "validation", "supervisor"]:
-    if state["review_decision"] != "retry":
+    if state.get("review_decision", "") != "retry":
         return "supervisor"
     if state.get("retry_count", 0) >= 3:
         return "supervisor"      
@@ -175,7 +184,7 @@ if __name__ == "__main__":
         for event in app.stream(input_data, config=thread_config):
             for node_name, node_state in event.items():
                 if node_name == "__interrupt__":
-                    print("\nWorkflow Interrupted for Human Input]")
+                    print("\nWorkflow Interrupted for Human Input")
                     continue
                 print(f"\n Output from {node_name}")
                 if isinstance(node_state, dict):
