@@ -1,55 +1,56 @@
 from langchain_core.messages import SystemMessage
 from langchain_core.tools import tool
-import polars as pl
-import uuid
+import pandas as pd
+import numpy as np
 from langgraph.types import interrupt
 
 from Class.AgentState import AgentState
-from Class.CleaningAction import CleaningAction, CleaningActionType
-from Class.EDAInsight import EDAInsight
-from Class.EngineeringAction import EngineeringAction, EncodingType, BinningType
+from Class.SupervisorAction.CleaningAction import CleaningAction, CleaningActionType
+from Class.SupervisorAction.EDAInsight import EDAInsight
+from Class.SupervisorAction.EngineeringAction import EngineeringAction, EncodingType, BinningType
 
-def get_lf(file_path: str, file_format: str):
+def read_df(file_path: str, file_format: str) -> pd.DataFrame:
     if file_format == "csv":
-        lf = pl.scan_csv(file_path)
+        df = pd.read_csv(file_path)
     elif file_format == "parquet":
-        lf = pl.scan_parquet(file_path)
+        df = pd.read_parquet(file_path)
     elif file_format == "json":
-        lf = pl.scan_ndjson(file_path)
+        df = pd.read_json(file_path, lines=True)
     else:
         raise ValueError(f"Don't support {file_format}")
-    return lf
+    return df
 
 DTYPE_MAP = {
-    "int8": pl.Int8, "int16": pl.Int16, "int32": pl.Int32, "int64": pl.Int64,
-    "uint8": pl.UInt8, "uint16": pl.UInt16, "uint32": pl.UInt32, "uint64": pl.UInt64,
-    "float32": pl.Float32, "float64": pl.Float64, "float": pl.Float64, "double": pl.Float64,
-    "str": pl.String, "string": pl.String, "utf8": pl.String,
-    "bool": pl.Boolean, "boolean": pl.Boolean,
-    "date": pl.Date, "datetime": pl.Datetime, "time": pl.Time,
-    "categorical": pl.Categorical,
+    "int8": np.int8, "int16": np.int16, "int32": np.int32, "int64": np.int64,
+    "uint8": np.uint8, "uint16": np.uint16, "uint32": np.uint32, "uint64": np.uint64,
+    "float32": np.float32, "float64": np.float64, "float": np.float64, "double": np.float64,
+    "str": "string", "string": "string", "utf8": "string",
+    "bool": "boolean", "boolean": "boolean",
+    "date": "datetime64[ns]", "datetime": "datetime64[ns]", "time": "datetime64[ns]",
+    "categorical": "category",
 }
 
 @tool
-def apply_cleaning_tool(action: CleaningAction, skip_confirm: bool, output_path: str) -> str:
+def cleaning_tool(action: CleaningAction, output_path: str) -> str:
     """
     Apply a specific cleaning action to a column of the dataset and write the results to a new file.
     Only call this tool after clearly identifying the problem via profile_dataset.
     This tool will pause and wait for user confirmation before actually overwriting the data.
     """
-    lf = get_lf(action.file_path, action.file_format)
-    schema = lf.collect_schema()
-    if action.column not in schema.names():
-        raise ValueError(f"Column '{action.column}' not found in dataset. Valid columns: {list(schema.names())}")
+    df = read_df(action.file_path, action.file_format)
+    if action.column not in df.columns:
+        raise ValueError(f"Column '{action.column}' not found in dataset. Valid columns: {df.columns.tolist()}")
 
     if action.actionType == CleaningActionType.DROP_ROWS:
-        lf = lf.drop_nulls(subset=[action.column])
+        df = df.dropna(subset=[action.column])
     elif action.actionType == CleaningActionType.IMPUTE_MEDIAN:
-        lf = lf.with_columns(pl.col(action.column).fill_null(pl.col(action.column).median()))
+        df[action.column] = df[action.column].fillna(df[action.column].median())
     elif action.actionType == CleaningActionType.IMPUTE_MEAN:
-        lf = lf.with_columns(pl.col(action.column).fill_null(pl.col(action.column).mean()))
+        df[action.column] = df[action.column].fillna(df[action.column].mean())
     elif action.actionType == CleaningActionType.IMPUTE_MODE:
-        lf = lf.with_columns(pl.col(action.column).fill_null(pl.col(action.column).mode().first()))
+        mode_val = df[action.column].mode()
+        if not mode_val.empty:
+            df[action.column] = df[action.column].fillna(mode_val.iloc[0])
     elif action.actionType == CleaningActionType.CAST_DTYPE:
         target_dtype = DTYPE_MAP.get(str(action.target_dtype).lower())
         if target_dtype is None:
@@ -57,15 +58,15 @@ def apply_cleaning_tool(action: CleaningAction, skip_confirm: bool, output_path:
                 f"Unsupported target_dtype '{action.target_dtype}'. "
                 f"Supported dtypes: {sorted(DTYPE_MAP.keys())}"
             )
-        lf = lf.with_columns(pl.col(action.column).cast(target_dtype))
+        df[action.column] = df[action.column].astype(target_dtype)
     elif action.actionType == CleaningActionType.DROP_COLUMN:
-        lf = lf.drop(action.column)
+        df = df.drop(columns=[action.column])
 
-    lf.sink_csv(output_path) 
+    df.to_csv(output_path, index=False) 
     return f"Use '{action}' on '{action.column}', save at {output_path}"
 
 @tool
-def encoding_tool(action: EngineeringAction, skip_confirm: bool, output_path:str) -> str:
+def encoding_tool(action: EngineeringAction, output_path:str) -> str:
     """
     Apply this tool only to nominal data columns to encoding:
         - Use result from univariate_analyst_cat as input to suggest encoding plans
@@ -77,38 +78,34 @@ def encoding_tool(action: EngineeringAction, skip_confirm: bool, output_path:str
     Returns:
         - New Encoded columns
     """        
-    lf = get_lf(action.file_path, action.file_format)
-    schema = lf.collect_schema()
-    if action.column not in schema.names():
-        raise ValueError(f"Column '{action.column}' not found in dataset. Valid columns: {list(schema.names())}")
+    df = read_df(action.file_path, action.file_format)
+    if action.column not in df.columns:
+        raise ValueError(f"Column '{action.column}' not found in dataset. Valid columns: {df.columns.tolist()}")
         
     if action.actionType == EncodingType.FREQUENCY:
-        lf = lf.with_columns((pl.len().over(action.column) / pl.len()).alias(f'{action.column}_encoded'))
-        encoded_df = lf.collect()
+        freq_map = df[action.column].value_counts(normalize=True)
+        df[f'{action.column}_encoded'] = df[action.column].map(freq_map)
         
     elif action.actionType == EncodingType.LABEL:
-        lf = lf.with_columns(pl.col(action.column).cast(pl.Categorical).to_physical().alias(f'{action.column}_encoded'))
-        encoded_df = lf.collect()
+        codes, _ = pd.factorize(df[action.column])
+        df[f'{action.column}_encoded'] = codes
         
     elif action.actionType == EncodingType.ORDINAL:
-        encoded_df = lf.collect()
-        unique_vals = encoded_df.get_column(action.column).drop_nulls().unique().sort()
+        unique_vals = sorted(df[action.column].dropna().unique())
         mapping = {val: i for i, val in enumerate(unique_vals)}
-        encoded_df = encoded_df.with_columns(pl.col(action.column).replace(mapping, default=None).cast(pl.Int32).alias(f'{action.column}_encoded'))
+        df[f'{action.column}_encoded'] = df[action.column].map(mapping).astype('Int32')
         
     elif action.actionType == EncodingType.ONE_HOT:
-        encoded_df = lf.collect()
-        encoded_df = encoded_df.to_dummies(columns=[action.column])
+        df = pd.get_dummies(df, columns=[action.column])
         
-    encoded_df.write_csv(output_path)
+    df.to_csv(output_path, index=False)
     
-    with pl.Config(tbl_rows=5, tbl_cols=6):
-        sample_str = str(encoded_df.head(5))
+    sample_str = df.head(5).to_string(index=False)
     
     return f"Use '{action}' on '{action.column}', save at {output_path}. Output head: {sample_str}"
 
 @tool
-def binning_standardizing_tool(action: EngineeringAction, skip_confirm: bool, output_path:str) -> str:
+def binning_standardizing_tool(action: EngineeringAction, output_path:str) -> str:
     """
     Apply this tool only to continuos data columns to encoding:
         - Use result from univariate_analyst_cat as input to suggest encoding plans
@@ -120,43 +117,36 @@ def binning_standardizing_tool(action: EngineeringAction, skip_confirm: bool, ou
     Returns:
         - A new Binned column
     """
-    lf = get_lf(action.file_path, action.file_format)
-    schema = lf.collect_schema()
-    if action.column not in schema.names():
-        raise ValueError(f"Column '{action.column}' not found in dataset. Valid columns: {list(schema.names())}")
+    df = read_df(action.file_path, action.file_format)
+    if action.column not in df.columns:
+        raise ValueError(f"Column '{action.column}' not found in dataset. Valid columns: {df.columns.tolist()}")
 
-    df = lf.select(pl.col(action.column)).collect()
+    series = df[action.column]
     
     if action.actionType == BinningType.STANDARD:
-        mean = df[action.column].mean()
-        std = df[action.column].std()
+        mean = series.mean()
+        std = series.std()
         if std and std > 0:
-            new_df = df.with_columns(
-                ((pl.col(action.column) - mean) / std).alias(f"{action.column}_std")
-            )
+            new_df = df[[action.column]].copy()
+            new_df[f"{action.column}_std"] = (series - mean) / std
         else:
             raise TypeError(f"{std} is NULL or <0")
     elif action.actionType == BinningType.EQUAL:
-        min_val = df.select(pl.col(action.column).min()).item()
-        max_val = df.select(pl.col(action.column).max()).item()
+        min_val = series.min()
+        max_val = series.max()
         
         step = (max_val - min_val) / action.n_bin
         breaks = [min_val + i * step for i in range(1, action.n_bin)]
         
-        new_df = df.with_columns(
-            pl.col(action.column).cut(breaks).alias(f"{action.column}_binned")
-        )
+        new_df = df[[action.column]].copy()
+        new_df[f"{action.column}_binned"] = pd.cut(series, bins=[min_val] + breaks + [max_val], include_lowest=True)
     elif action.actionType == BinningType.QUANTILE:
-        new_df = df.with_columns(
-                pl.col(action.column)
-                .qcut(action.n_bin, allow_duplicates=True) 
-                .alias(f"{action.column}_binned")
-            )
+        new_df = df[[action.column]].copy()
+        new_df[f"{action.column}_binned"] = pd.qcut(series, q=action.n_bin, duplicates='drop')
         
-    new_df.write_csv(output_path)    
+    new_df.to_csv(output_path, index=False)    
     
-    with pl.Config(tbl_rows=5, tbl_cols=6):
-        sample_str = str(new_df.head(5))
+    sample_str = new_df.head(5).to_string(index=False)
     
     return f"Use '{action}' on '{action.column}', save at {output_path}. Output head: {sample_str}"
 
@@ -227,12 +217,12 @@ def executor_node(state: AgentState) -> dict:
 
     try:
         if isinstance(action, CleaningAction):
-            result = apply_cleaning_tool.invoke({"action": action, "skip_confirm": skip_confirm, "output_path": output_path})
+            result = cleaning_tool.invoke({"action": action, "output_path": output_path})
         elif isinstance(action, EngineeringAction):
             if isinstance(action.actionType, EncodingType):
-                result = encoding_tool.invoke({"action": action, "skip_confirm": skip_confirm, "output_path": output_path})
+                result = encoding_tool.invoke({"action": action, "output_path": output_path})
             elif isinstance(action.actionType, BinningType):
-                result = binning_standardizing_tool.invoke({"action": action, "skip_confirm": skip_confirm, "output_path": output_path})
+                result = binning_standardizing_tool.invoke({"action": action, "output_path": output_path})
             else:
                 raise TypeError(f"Unsupported EngineeringAction.actionType: {type(action.actionType).__name__}")
         elif isinstance(action, EDAInsight):  
@@ -245,12 +235,7 @@ def executor_node(state: AgentState) -> dict:
         result = f"EXECUTION_FAILED: {e}"
         fallback_used = True
     
-    return {
-        "fallback_used": fallback_used, 
-        "skip_confirm": skip_confirm, 
-        "action_res": result, 
-        'current_action': action
-    }
+    return {"fallback_used": fallback_used, "skip_confirm": skip_confirm, "action_res": result, "current_action": action}
     
 def review_execution_node(state: AgentState):
     action_type = state.get('action_type')
@@ -335,8 +320,4 @@ def review_execution_node(state: AgentState):
         )
     )
     
-    return {
-        "completed_actions": [record],
-        "retry_count": 0,
-        "review_decision": status
-    }
+    return {"completed_actions": [record], "retry_count": 0, "review_decision": status}

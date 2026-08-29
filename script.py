@@ -2,104 +2,99 @@ from dotenv import load_dotenv
 from langgraph.graph import StateGraph, START, END
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.types import Command
-from langchain_core.messages import HumanMessage
 import uuid
 import json
-from datetime import datetime
 
 from Class.FinancialState import FinancialReportState
-from Subgraph.year_worker import year_worker_wrapper_node
-from Subgraph.multi_year.dispatcher import file_dispatcher, route_to_year_workers, result_reducer
-from Subgraph.multi_year.normalizer import schema_mapper, unit_currency_normalizer
-from Subgraph.multi_year.accounting import accounting_identity_checker, yoy_variance_flagger
-from Subgraph.multi_year.analysis import ratio_engine, trend_engine
-from Subgraph.multi_year.reporting import (
-    chart_composer, narrative_writer, generate_financial_report, build_financial_report
-)
+
+from Subgraph.dispatcher import generate_batch_id, pdf_dispatcher, route_to_extraction_workers
+from Subgraph.extraction import extraction_worker_node
+from Subgraph.harmonizer import schema_harmonizer
+from Subgraph.ratio_trend import ratio_trend_engine
+from Subgraph.reporting import generate_report_node, build_report_node
+
+from Subgraph.supervisor import supervisor_core, route_after_validation, route_after_review
+from Subgraph.cleaning import cleaning
+from Subgraph.eda import eda
+from Subgraph.feature import feature_engineering
+from Subgraph.validator import validation
+from Subgraph.executor import executor_node, review_execution_node
 
 load_dotenv()
 
-# ── generate_id node ──────────────────────────────────────────────────────────
-def generate_id_node(state: FinancialReportState) -> dict:
-    return {"run_id": f"fin_report_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:6]}"}
+graph = StateGraph(FinancialReportState)
 
-# ── Build Graph (section 3) ──────────────────────────────────────────────────
-def build_financial_graph():
-    workflow = StateGraph(FinancialReportState)
+graph.add_node("generate_batch_id", generate_batch_id)
+graph.add_node("pdf_dispatcher", pdf_dispatcher)
+graph.add_node("extraction_worker", extraction_worker_node)
+graph.add_node("schema_harmonizer", schema_harmonizer)
 
-    # ── Register Nodes ────────────────────────────────────────────────────────
-    workflow.add_node("generate_id", generate_id_node)
-    workflow.add_node("file_dispatcher", file_dispatcher)            # Module 1
-    workflow.add_node("year_worker", year_worker_wrapper_node)       # Subgraph (pipeline cũ)
-    workflow.add_node("result_reducer", result_reducer)              # Module 1
+graph.add_node("supervisor", supervisor_core)
+graph.add_node("cleaning", cleaning)
+graph.add_node("eda", eda)
+graph.add_node("feature_engineering", feature_engineering)
+graph.add_node("validation", validation)
+graph.add_node("executor", executor_node)
+graph.add_node("review", review_execution_node)
 
-    # Module 2
-    workflow.add_node("schema_mapper", schema_mapper)
-    workflow.add_node("unit_currency_normalizer", unit_currency_normalizer)
+graph.add_node("ratio_trend_engine", ratio_trend_engine)
+graph.add_node("generate_report", generate_report_node)
+graph.add_node("build_report", build_report_node)
 
-    # Module 3
-    workflow.add_node("accounting_identity_checker", accounting_identity_checker)
-    workflow.add_node("yoy_variance_flagger", yoy_variance_flagger)
+graph.add_edge(START, "generate_batch_id")
+graph.add_edge("generate_batch_id", "pdf_dispatcher")
 
-    # Module 4
-    workflow.add_node("ratio_engine", ratio_engine)
-    workflow.add_node("trend_engine", trend_engine)
+graph.add_conditional_edges(
+    "pdf_dispatcher",
+    route_to_extraction_workers,
+    ["extraction_worker"],
+)
 
-    # Module 5
-    workflow.add_node("chart_composer", chart_composer)
-    workflow.add_node("narrative_writer", narrative_writer)
-    # Final report stage — node names kept identical to the design doc (part 3)
-    # (`generate_report` -> `build_report`), implemented by the new multi-year nodes.
-    workflow.add_node("generate_report", generate_financial_report)
-    workflow.add_node("build_report", build_financial_report)
+graph.add_edge("extraction_worker", "schema_harmonizer")
+graph.add_edge("schema_harmonizer", "supervisor")
+graph.add_edge('supervisor', 'cleaning')
+graph.add_edge('supervisor', 'eda')
+graph.add_edge('supervisor', 'feature_engineering')
+graph.add_edge("cleaning", "validation")
+graph.add_edge("eda", "validation")
+graph.add_edge("feature_engineering", "validation")
 
-    # ── Edges & Routing ───────────────────────────────────────────────────────
-    workflow.add_edge(START, "generate_id")
-    workflow.add_edge("generate_id", "file_dispatcher")
+graph.add_conditional_edges(
+    "validation",
+    route_after_validation,
+    {
+        "executor": "executor",
+        "supervisor": "supervisor",
+    },
+)
 
-    # Fan-Out: `file_dispatcher -->|Send x N năm| year_worker` (module 1)
-    workflow.add_conditional_edges(
-        "file_dispatcher",
-        route_to_year_workers,
-        ["year_worker"]
-    )
+graph.add_edge("executor", "review")
 
-    # Fan-In from year_worker to result_reducer
-    workflow.add_edge("year_worker", "result_reducer")
+graph.add_conditional_edges(
+    "review",
+    route_after_review,
+    {
+        "executor": "executor",
+        "validation": "validation",
+        "supervisor": "supervisor",
+    },
+)
 
-    # Sequential Multi-Year Processing Steps
-    workflow.add_edge("result_reducer", "schema_mapper")
-    workflow.add_edge("schema_mapper", "unit_currency_normalizer")
-    workflow.add_edge("unit_currency_normalizer", "accounting_identity_checker")
-    workflow.add_edge("accounting_identity_checker", "yoy_variance_flagger")
-    workflow.add_edge("yoy_variance_flagger", "ratio_engine")
-    workflow.add_edge("ratio_engine", "trend_engine")
-    workflow.add_edge("trend_engine", "chart_composer")
-    workflow.add_edge("chart_composer", "narrative_writer")
-    workflow.add_edge("narrative_writer", "generate_report")
-    workflow.add_edge("generate_report", "build_report")
-    workflow.add_edge("build_report", END)
+graph.add_edge('review', 'ratio_trend_engine')
+graph.add_edge("ratio_trend_engine", "generate_report")
+graph.add_edge("generate_report", "build_report")
+graph.add_edge("build_report", END)
 
-    checkpointer = InMemorySaver()
-    return workflow.compile(checkpointer=checkpointer)
-
-
-app = build_financial_graph()
+checkpointer = InMemorySaver()
+app = graph.compile(checkpointer=checkpointer)
 
 # img = app.get_graph().draw_mermaid_png()
 # with open('graph_image.png', 'wb') as f:
 #     f.write(img)
 
-# ── CLI Runner ────────────────────────────────────────────────────────────────
 if __name__ == "__main__":
     thread_config = {"configurable": {"thread_id": str(uuid.uuid4())}}
-
-    print("═" * 60)
-    print("  Multi-Year Financial Report Graph (Section 3)")
-    print("═" * 60)
-    print(f"Graph nodes: {list(app.get_graph().nodes.keys())}")
-    print()
-
+    print("  Batch PDF Financial Report Pipeline")
     def handle_stream(input_data):
         for event in app.stream(input_data, config=thread_config):
             for node_name, node_state in event.items():
@@ -165,7 +160,7 @@ if __name__ == "__main__":
             print(f"Resuming graph with Command(resume={decision})")
             handle_stream(Command(resume=decision))
         else:
-            user_input = input("\nEnter CSV file paths (comma-separated) or 'exit': ").strip()
+            user_input = input("\nEnter PDF file paths (comma-separated) or 'exit': ").strip()
             if user_input.lower() == 'exit':
                 break
             if not user_input:

@@ -1,14 +1,14 @@
 from langgraph.graph import StateGraph, START, END
-from typing import Literal 
+from typing import Literal, Optional
 from langchain_core.messages import HumanMessage
 from langchain_core.tools import tool
 from langgraph.types import interrupt
 from pydantic import ValidationError
 
 from Class.AgentState import AgentState
-from Class.CleaningAction import CleaningAction, CleaningActionType
-from Class.EDAInsight import EDAInsight
-from Class.EngineeringAction import EngineeringAction, EncodingType, BinningType
+from Class.SupervisorAction.CleaningAction import CleaningAction, CleaningActionType
+from Class.SupervisorAction.EDAInsight import EDAInsight
+from Class.SupervisorAction.EngineeringAction import EngineeringAction, EncodingType, BinningType
 from Subgraph.cleaning import cleaning
 from Subgraph.eda import eda 
 from Subgraph.feature import feature_engineering
@@ -73,6 +73,27 @@ def get_valid_columns(state: AgentState) -> list:
         except Exception:
             pass
     return []
+
+def check_identity(year, data: dict) -> Optional[dict]:
+    """Kiểm tra đẳng thức kế toán: Tài sản = Nợ phải trả + Vốn CSH."""
+    assets = data.get("tong_tai_san", 0.0)
+    liabilities = data.get("no_phai_tra", 0.0)
+    equity = data.get("von_chu_so_huu", 0.0)
+
+    if assets > 0 and (liabilities > 0 or equity > 0):
+        diff = abs(assets - (liabilities + equity))
+        if diff > 1e-2:
+            return {
+                "year": year,
+                "flag_type": "identity_violation",
+                "field": "tong_tai_san",
+                "message": (
+                    f"Sai lệch bảng cân đối năm {year}: "
+                    f"Tài sản ({assets:.2f}) != Nợ PT + Vốn CSH ({liabilities + equity:.2f})"
+                ),
+                "severity": "HIGH",
+            }
+    return None
 
 def compute_impact_node(state: AgentState) -> dict:
     dataset_profile = state.get('dataset_profile', {})
@@ -146,7 +167,16 @@ def validator_node(state: AgentState) -> dict:
                 "validation_error": f"LLM reported {action.rows_affected} but system computed {computed.get('rows_affected', 0)} rows affected for {action.column}."
             }
 
-    return {"validation": True, "validation_error": None}
+    # ── Kiểm tra đẳng thức kế toán (Tài sản = Nợ PT + Vốn CSH) ────────────
+    harmonized = state.get("harmonized_dataset", {})
+    acct_flags = list(state.get("validation_flags") or [])
+    if harmonized:
+        for year, data in harmonized.items():
+            flag = check_identity(year, data)
+            if flag:
+                acct_flags.append(flag)
+
+    return {"validation": True, "validation_error": None, "validation_flags": acct_flags}
 
 def repair_node(state: AgentState) -> dict:
     error = state.get("validation_error", "Output has incorrect format or incorrect stats")

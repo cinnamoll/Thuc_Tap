@@ -5,30 +5,30 @@ from langchain_core.messages import SystemMessage, ToolMessage, HumanMessage
 from langchain_deepseek import ChatDeepSeek
 from langchain_core.tools import tool, InjectedToolCallId
 from langgraph.prebuilt import ToolNode
-import polars as pl
+import pandas as pd
 import matplotlib.pyplot as plt
 import seaborn as sns
 from langgraph.types import Command
 import matplotlib
 
 from Class.AgentState import AgentState
-from Class.EDAInsight import EDAInsight
+from Class.SupervisorAction.EDAInsight import EDAInsight
 
 matplotlib.use('Agg') 
 load_dotenv()
 
 llm = ChatDeepSeek(model="deepseek-v4-flash")
     
-def get_lf(file_path: str, file_format: str):
+def read_df(file_path: str, file_format: str) -> pd.DataFrame:
     if file_format == "csv":
-        lf = pl.scan_csv(file_path)
+        df = pd.read_csv(file_path)
     elif file_format == "parquet":
-        lf = pl.scan_parquet(file_path)
+        df = pd.read_parquet(file_path)
     elif file_format == "json":
-        lf = pl.scan_ndjson(file_path)
+        df = pd.read_json(file_path, lines=True)
     else:
         raise ValueError(f"Don't support {file_format}")
-    return lf
+    return df
 
 @tool
 def univariate_analyst_numeric(file_path: str, file_format: str, column: str, tool_call_id: Annotated[str, InjectedToolCallId]) -> str:
@@ -45,73 +45,63 @@ def univariate_analyst_numeric(file_path: str, file_format: str, column: str, to
     Returns:
         Update the univariate field in AgentState with the dictionary containing value required
     """
-    lf = get_lf(file_path, file_format)
-    schema = lf.collect_schema()
+    df = read_df(file_path, file_format)
 
-    if column not in schema.names():
+    if column not in df.columns:
         return f"'{column}' not found in dataset."
 
-    dtype = schema[column]
-    if dtype not in (pl.Int8, pl.Int16, pl.Int32, pl.Int64,
-                      pl.Float32, pl.Float64, pl.UInt8, pl.UInt16, pl.UInt32, pl.UInt64):
-        return f"'{column}' is not numeric (dtype={dtype}). Use a categorical analysis tool instead."
+    if not pd.api.types.is_numeric_dtype(df[column]):
+        return f"'{column}' is not numeric (dtype={df[column].dtype}). Use a categorical analysis tool instead."
 
-    stats = lf.select([
-        pl.col(column).mean().alias("mean"),
-        pl.col(column).median().alias("median"),
-        pl.col(column).min().alias("min"),
-        pl.col(column).max().alias("max"),
-        pl.col(column).var().alias("variance"),
-        pl.col(column).std().alias("std"),
-        pl.col(column).skew().alias("skewness"),
-        pl.col(column).quantile(0.25).alias("q1"),
-        pl.col(column).quantile(0.75).alias("q3"),
-        pl.col(column).null_count().alias("null_count"),
-        pl.col(column).count().alias("count"),
-    ]).collect(streaming=True).to_dicts()[0]
+    series = df[column]
+    mean_val = series.mean()
+    median_val = series.median()
+    min_val = series.min()
+    max_val = series.max()
+    var_val = series.var()
+    std_val = series.std()
+    skew_val = series.skew()
+    q1 = series.quantile(0.25)
+    q3 = series.quantile(0.75)
+    null_count = int(series.isnull().sum())
+    count_val = int(series.count())
 
-    q1, q3 = stats["q1"], stats["q3"]
     iqr = q3 - q1
     lower_bound = q1 - 1.5 * iqr
     upper_bound = q3 + 1.5 * iqr
 
-    outlier_count = lf.select(
-        pl.col(column).filter(
-            (pl.col(column) < lower_bound) | (pl.col(column) > upper_bound)
-        ).count().alias("outliers")
-    ).collect(streaming=True).item()
+    outlier_count = int(((series < lower_bound) | (series > upper_bound)).sum())
 
-    skew = stats["skewness"]
-    if skew is None:
+    if skew_val is None or pd.isna(skew_val):
         skew_desc = "Unidentified"
-    elif abs(skew) < 0.5:
+    elif abs(skew_val) < 0.5:
         skew_desc = "approximately symmetric"
-    elif skew > 0.5:
+    elif skew_val > 0.5:
         skew_desc = "right-skewed"
     else:
         skew_desc = "left-skewed / negative skew"
 
-    range_val = stats["max"] - stats["min"]
+    range_val = max_val - min_val
     
     res = {
         "column": column,
-        "valid_values": stats['count'],
-        "null_values": stats['null_count'],
-        "mean": round(stats['mean'], 4),
-        "median": round(stats['median'], 4),
-        "range": round(range_val, 4),
-        "min": round(stats['min'], 4),
-        "max": round(stats['max'], 4),
-        "variance": round(stats['variance'], 4),
-        "std_dev": round(stats['std'], 4),
-        "iqr": round(iqr, 4),
-        "q1": round(q1, 4),
-        "q3": round(q3, 4),
-        "skewness": round(skew, 4),
+        "valid_values": count_val,
+        "null_values": null_count,
+        "mean": round(float(mean_val), 4),
+        "median": round(float(median_val), 4),
+        "range": round(float(range_val), 4),
+        "min": round(float(min_val), 4),
+        "max": round(float(max_val), 4),
+        "variance": round(float(var_val), 4),
+        "std_dev": round(float(std_val), 4),
+        "iqr": round(float(iqr), 4),
+        "q1": round(float(q1), 4),
+        "q3": round(float(q3), 4),
+        "skewness": round(float(skew_val), 4),
         "skewness_description": skew_desc,
         "outliers_count": outlier_count,
-        "lower_bound": round(lower_bound, 4),
-        "upper_bound": round(upper_bound, 4)
+        "lower_bound": round(float(lower_bound), 4),
+        "upper_bound": round(float(upper_bound), 4)
     }
     
     return Command(update={"univariate": [res], "messages": [ToolMessage(content=str(res), tool_call_id=tool_call_id)]})
@@ -131,54 +121,36 @@ def univariate_analyst_cat(file_path: str, file_format: str, column: str, tool_c
     Returns:
         Update the univariate field in AgentState with the dictionary containing value required
     """
-    lf = get_lf(file_path, file_format)
-    schema = lf.collect_schema()
+    df = read_df(file_path, file_format)
 
-    if column not in schema.names():
+    if column not in df.columns:
         return f"'{column}' not found in dataset."
 
-    dtype = schema[column]
-    if dtype not in (pl.Categorical, pl.String) and not isinstance(dtype, pl.Enum):
+    dtype = df[column].dtype
+    if pd.api.types.is_numeric_dtype(dtype) and not pd.api.types.is_categorical_dtype(dtype):
         return f"'{column}' is not a nominal/categorical type (dtype={dtype}). Use a numeric analysis tool instead."
     
-    df = lf.select(pl.col(column)).collect()
-    
-    # Compute `mode` on the collected Series to stay compatible with all polars
-    # versions (mode() inside a LazyFrame select can return multiple rows and fail).
-    mode_series = df.get_column(column).drop_nulls().mode()
-    modes = mode_series.to_list()
+    series = df[column]
+    mode_series = series.dropna().mode()
+    modes = mode_series.tolist()
 
-    stats = lf.select([
-        pl.col(column).drop_nulls().n_unique().alias("n_unique"),
-        pl.col(column).is_not_null().sum().alias("valid_count"),
-        pl.col(column).is_null().sum().alias("null_count"),
-        pl.len().alias("total_count")
-    ]).collect()
+    n_unique = int(series.dropna().nunique())
+    valid_count = int(series.notna().sum())
+    null_count = int(series.isna().sum())
+    total_count = len(df)
 
-    n_unique = stats.get_column("n_unique").item()
-    valid_count = stats.get_column("valid_count").item()
-    null_count = stats.get_column("null_count").item()
-    total_count = stats.get_column("total_count").item()
+    # Build frequency table
+    value_counts = series.value_counts(dropna=False).reset_index()
+    value_counts.columns = ["Column_value", "Value_count"]
+    value_counts["Frequency"] = value_counts["Value_count"] / total_count
+    value_counts["Percentage"] = value_counts["Frequency"] * 100
+    value_counts = value_counts.sort_values("Value_count", ascending=False)
 
-    freq_table = (
-        df.group_by(column)
-        .agg(pl.len().alias("Value_count"))
-        .with_columns(
-            (pl.col("Value_count") / total_count).alias("Frequency"),
-            ((pl.col("Value_count") / total_count) * 100).alias("Percentage")
-        )
-        .sort("Value_count", descending=True)
-        .rename({column: "Column_value"})
-    )
+    valid_df = value_counts[value_counts["Column_value"].notna()]
+    null_df = value_counts[value_counts["Column_value"].isna()]
 
-    valid_df = freq_table.filter(pl.col("Column_value").is_not_null())
-    null_df = freq_table.filter(pl.col("Column_value").is_null())
-
-    with pl.Config(tbl_rows=valid_df.height if valid_df.height > 0 else 1, tbl_cols=4):
-        valid_str = str(valid_df) if not valid_df.is_empty() else "No valid data found."
-        
-    with pl.Config(tbl_rows=null_df.height if null_df.height > 0 else 1, tbl_cols=4):
-        null_str = str(null_df) if not null_df.is_empty() else "No missing values."
+    valid_str = valid_df.to_string(index=False) if not valid_df.empty else "No valid data found."
+    null_str = null_df.to_string(index=False) if not null_df.empty else "No missing values."
 
     if not modes:
         mode_str = None
@@ -207,65 +179,64 @@ def draw_graph(file_path: str, file_format: str, cols: List[str], tool_call_id: 
         file_path (str): dataset file path
 
     """
-    lf = get_lf(file_path, file_format)
-    schema = lf.collect_schema()
+    df = read_df(file_path, file_format)
     
-    invalid_cols = [c for c in cols if c not in schema.names()]
+    invalid_cols = [c for c in cols if c not in df.columns]
     if invalid_cols:
-        return Command(update={"messages": [ToolMessage(content=f"Columns {invalid_cols} not found in dataset schema. Valid columns: {list(schema.names())}", tool_call_id=tool_call_id)]})
+        return Command(update={"messages": [ToolMessage(content=f"Columns {invalid_cols} not found in dataset schema. Valid columns: {df.columns.tolist()}", tool_call_id=tool_call_id)]})
 
-    NUMERIC_TYPES = (pl.Int8, pl.Int16, pl.Int32, pl.Int64, pl.Float32, pl.Float64, 
-                     pl.UInt8, pl.UInt16, pl.UInt32, pl.UInt64)
-    CAT_TYPES = (pl.Categorical, pl.String, pl.Enum)
+    def is_numeric(col):
+        return pd.api.types.is_numeric_dtype(df[col])
+    
+    def is_categorical(col):
+        return pd.api.types.is_string_dtype(df[col]) or pd.api.types.is_categorical_dtype(df[col])
 
-    df_polars = lf.select([pl.col(c) for c in cols]).collect().drop_nulls()
-    df = df_polars.to_pandas()
+    df_plot = df[cols].dropna()
     
     plt.figure(figsize=(10, 6))
 
     if len(cols) == 1:
         col = cols[0]
-        if schema[col] in CAT_TYPES:
-            sns.countplot(data=df, x=col)
+        if is_categorical(col):
+            sns.countplot(data=df_plot, x=col)
             plt.title(f"Count distribution of {col}")
             plt.xticks(rotation=45)
             
-        elif schema[col] in NUMERIC_TYPES:
-            sns.histplot(data=df, x=col, kde=True, color="blue")
+        elif is_numeric(col):
+            sns.histplot(data=df_plot, x=col, kde=True, color="blue")
             plt.title(f"Data distribution of {col}")
 
     elif len(cols) == 2:
         c1, c2 = cols[0], cols[1]
-        t1, t2 = schema[c1], schema[c2]
         
-        if t1 in NUMERIC_TYPES and t2 in NUMERIC_TYPES:
-            sns.scatterplot(data=df, x=c1, y=c2, alpha=0.6)
+        if is_numeric(c1) and is_numeric(c2):
+            sns.scatterplot(data=df_plot, x=c1, y=c2, alpha=0.6)
             plt.title(f"Correlation between {c1} and {c2}")
             
-        elif t1 in CAT_TYPES and t2 in NUMERIC_TYPES:
-            sns.boxplot(data=df, x=c1, y=c2)
+        elif is_categorical(c1) and is_numeric(c2):
+            sns.boxplot(data=df_plot, x=c1, y=c2)
             plt.title(f"Distribution of {c2} across {c1}")
             
-        elif t1 in NUMERIC_TYPES and t2 in CAT_TYPES:
-            sns.boxplot(data=df, x=c2, y=c1)
+        elif is_numeric(c1) and is_categorical(c2):
+            sns.boxplot(data=df_plot, x=c2, y=c1)
             plt.title(f"Distribution of {c1} across {c2}")
 
     elif len(cols) == 3:
-        num_cols = [c for c in cols if schema[c] in NUMERIC_TYPES]
-        cat_cols = [c for c in cols if schema[c] in CAT_TYPES]
+        num_cols = [c for c in cols if is_numeric(c)]
+        cat_cols = [c for c in cols if is_categorical(c)]
         
         if len(num_cols) == 2 and len(cat_cols) == 1:
-            sns.scatterplot(data=df, x=num_cols[0], y=num_cols[1], hue=cat_cols[0])
+            sns.scatterplot(data=df_plot, x=num_cols[0], y=num_cols[1], hue=cat_cols[0])
             plt.title(f"Correlation between {num_cols[0]} and {num_cols[1]}, grouped by {cat_cols[0]}")
             
         elif len(num_cols) == 3:
-            sns.scatterplot(data=df, x=num_cols[0], y=num_cols[1], size=num_cols[2], sizes=(20, 400), alpha=0.5)
+            sns.scatterplot(data=df_plot, x=num_cols[0], y=num_cols[1], size=num_cols[2], sizes=(20, 400), alpha=0.5)
             plt.title(f"Bubble chart: X={num_cols[0]}, Y={num_cols[1]}, Size={num_cols[2]}")
 
     plt.tight_layout()
     temp = "" 
     for col in cols:
-        temp += (col + ' ')
+        temp += (col + '_')
     file_name = f"{temp}_eda_output.png"
     plt.savefig(file_name)
     plt.close()
@@ -294,7 +265,7 @@ def propose_insight_node(state: AgentState) -> AgentState:
     valid_cols = dataset_profile.get('columns', [])
     if not valid_cols and file_path:
         try:
-            valid_cols = list(get_lf(file_path, file_format).collect_schema().names())
+            valid_cols = read_df(file_path, file_format).columns.tolist()
         except Exception:
             valid_cols = []
 
@@ -311,7 +282,7 @@ def propose_insight_node(state: AgentState) -> AgentState:
         4. Pick exactly ONE remaining column/metric with the most impactful unresolved insight 
         (central tendency, dispersion, distribution shape, correlation, etc.) and propose a single 
         EDAInsight for it, including a suggested visualization if relevant.
-        5. If every meaningful insight has already been proposed, return: {"column": "none", "metric_value": {"NONE": 0.0}}
+        5. If every meaningful insight has already been proposed, return: {{"column": "none", "metric_value": {{"NONE": 0.0}}}}
         """
     )
 
@@ -345,7 +316,7 @@ def route_tool_or_finish(state) -> Literal["eda_tools", 'propose_insight']:
         return "eda_tools"
     return 'propose_insight'
 
-def route_after_propose(state: AgentState) -> Literal["eda_agent", END]: #type:ignore
+def route_after_propose(state: AgentState) -> Literal["eda_agent", "__end__"]:
     if state.get("eda_done") == True:
         return END
     return "eda_agent" 

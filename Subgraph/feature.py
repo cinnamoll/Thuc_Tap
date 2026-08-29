@@ -5,26 +5,27 @@ from langchain_core.messages import SystemMessage, ToolMessage, HumanMessage
 from langchain_deepseek import ChatDeepSeek
 from langgraph.prebuilt import ToolNode
 from langchain_core.tools import tool, InjectedToolCallId
-import polars as pl
+import pandas as pd
+import numpy as np
 from langgraph.types import Command
 
 from Class.AgentState import AgentState
-from Class.EngineeringAction import EngineeringAction, EncodingType, BinningType
+from Class.SupervisorAction.EngineeringAction import EngineeringAction, EncodingType, BinningType
 
 load_dotenv()
 
 llm = ChatDeepSeek(model="deepseek-v4-flash")
 
-def get_lf(file_path: str, file_format: str):
+def read_df(file_path: str, file_format: str) -> pd.DataFrame:
     if file_format == "csv":
-        lf = pl.scan_csv(file_path)
+        df = pd.read_csv(file_path)
     elif file_format == "parquet":
-        lf = pl.scan_parquet(file_path)
+        df = pd.read_parquet(file_path)
     elif file_format == "json":
-        lf = pl.scan_ndjson(file_path)
+        df = pd.read_json(file_path, lines=True)
     else:
         raise ValueError(f"Don't support {file_format}")
-    return lf
+    return df
 
 @tool 
 def preview_encoding_tool(file_path: str, file_format: str, column: str, encode: EncodingType, tool_call_id: Annotated[str, InjectedToolCallId], length: int=20) -> str:
@@ -40,42 +41,39 @@ def preview_encoding_tool(file_path: str, file_format: str, column: str, encode:
         - new Encoded column head
     """
     
-    lf = get_lf(file_path, file_format)
-    schema = lf.collect_schema()
+    df = read_df(file_path, file_format)
 
-    if column not in schema.names():
+    if column not in df.columns:
         return f"'{column}' not found in dataset."
 
-    dtype = schema[column]
-    if dtype not in (pl.Categorical, pl.String) and not isinstance(dtype, pl.Enum):
+    dtype = df[column].dtype
+    if pd.api.types.is_numeric_dtype(dtype) and not pd.api.types.is_categorical_dtype(dtype):
         return f"'{column}' is not a nominal/categorical type (dtype={dtype})"
     
-    df = lf.select(pl.col(column)).collect().head(length)
+    df = df[[column]].head(length).copy()
     
     if encode == 'frequency_encoding':
-        encoded_df = df.with_columns(
-            (pl.len().over(column) / df.height).alias(f'{column}_encoded')
-        )   
+        freq_map = df[column].value_counts(normalize=True)
+        encoded_df = df.copy()
+        encoded_df[f'{column}_encoded'] = df[column].map(freq_map)
     elif encode == 'label_encoding':
-        encoded_df = df.with_columns(
-            pl.col(column).cast(pl.Categorical).to_physical().alias(f'{column}_encoded')
-        )
+        codes, _ = pd.factorize(df[column])
+        encoded_df = df.copy()
+        encoded_df[f'{column}_encoded'] = codes
     elif encode == 'ordinal_encoding':
-        unique_vals = df.get_column(column).drop_nulls().unique().sort()
+        unique_vals = sorted(df[column].dropna().unique())
         mapping = {val: i for i, val in enumerate(unique_vals)}
-            
-        encoded_df = df.with_columns(
-            pl.col(column).replace(mapping, default=None).cast(pl.Int32).alias(f'{column}_encoded')
-        )   
+        encoded_df = df.copy()
+        encoded_df[f'{column}_encoded'] = df[column].map(mapping).astype('Int32')
     elif encode == 'one_hot_encoding':
-        encoded_df = df.to_dummies(columns=[column])     
+        encoded_df = pd.get_dummies(df, columns=[column])
     else: 
         return "Unsupported encode type"   
     
     res = {
         "Target Column": column,
         "Method": encode,
-        f"First {length} rows": encoded_df
+        f"First {length} rows": encoded_df.to_string(index=False)
     }
     
     return Command(update={
@@ -100,47 +98,43 @@ def preview_binning_standard_tool(file_path: str, file_format: str, column: str,
         - A new Binned column head
     """
     
-    lf = get_lf(file_path, file_format)
-    schema = lf.collect_schema()
+    df = read_df(file_path, file_format)
 
-    if column not in schema.names():
+    if column not in df.columns:
         return f"'{column}' not found in dataset."
 
-    dtype = schema[column]
-    if dtype not in (pl.Int8, pl.Int16, pl.Int32, pl.Int64,
-                      pl.Float32, pl.Float64, pl.UInt8, pl.UInt16, pl.UInt32, pl.UInt64):
-        return f"'{column}' is not numeric (dtype={dtype})"
+    if not pd.api.types.is_numeric_dtype(df[column]):
+        return f"'{column}' is not numeric (dtype={df[column].dtype})"
     
-    df = lf.select(pl.col(column)).collect().head(length)
+    df = df[[column]].head(length).copy()
     
     if encode == 'standardize':
         mean = df[column].mean()
         std = df[column].std()
         if std is not None and std > 0:
-            new_df = df.with_columns(((pl.col(column) - mean) / std).alias(f"{column}_std"))
+            new_df = df.copy()
+            new_df[f"{column}_std"] = (df[column] - mean) / std
         else:
             return "Std is None. No binning with this column"
     elif encode == 'equal_width':
-        min_val = df.select(pl.col(column).min()).item()
-        max_val = df.select(pl.col(column).max()).item()
+        min_val = df[column].min()
+        max_val = df[column].max()
         
         step = (max_val - min_val) / n_bin
         breaks = [min_val + i * step for i in range(1, n_bin)]
         
-        new_df = df.with_columns(pl.col(column).cut(breaks).alias(f"{column}_binned"))
+        new_df = df.copy()
+        new_df[f"{column}_binned"] = pd.cut(df[column], bins=[min_val] + breaks + [max_val], include_lowest=True)
     elif encode == 'quantile':
-        new_df = df.with_columns(
-                pl.col(column)
-                .qcut(n_bin, allow_duplicates=True)
-                .alias(f"{column}_binned")
-            )
+        new_df = df.copy()
+        new_df[f"{column}_binned"] = pd.qcut(df[column], q=n_bin, duplicates='drop')
     else: 
         return "Unsupported binning type" 
     
     res = {
         "Target Column": column,
         "Method": encode,
-        f"First {length} rows": new_df
+        f"First {length} rows": new_df.to_string(index=False)
     }
     
     return Command(update={
@@ -168,7 +162,7 @@ def propose_action_node(state: AgentState) -> AgentState:
     valid_cols = dataset_profile.get('columns', [])
     if not valid_cols and file_path:
         try:
-            valid_cols = list(get_lf(file_path, file_format).collect_schema().names()) if file_format == 'csv' else []
+            valid_cols = read_df(file_path, file_format).columns.tolist()
         except Exception:
             valid_cols = []
 

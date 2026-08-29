@@ -28,7 +28,7 @@ class EngineeringAction(BaseModel):
 
     @field_validator("column", "reason", mode="before")
     @classmethod
-    def convert_none_to_str(cls, v):
-        if v is None:
+    def convert_none_to_str(cls, value):
+        if value is None:
             return ""
-        return v
+        return value

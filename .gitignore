@@ -1,6 +1,9 @@
 .env
-__pycache__/
+__pycache__
 .vscode
 .cursor
-.gitignore
 .venv
+.gitignore
+dataset
+temp.ipynb
+temp.md

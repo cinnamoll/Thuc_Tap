@@ -14,7 +14,7 @@ load_dotenv()
 llm = ChatDeepSeek(model="deepseek-v4-flash")
 
 class RouteDecision(TypedDict):
-    next: Literal["cleaning", "eda", "feature_engineering", "review", "generate_report", "FINISH"]
+    next: Literal["cleaning", "eda", "feature_engineering", "ratio_trend_engine", "FINISH"]
     reason: str 
 
 SUPERVISOR_PROMPT = """
@@ -38,23 +38,9 @@ SUPERVISOR_PROMPT = """
     {"next": "cleaning" | "eda" | "feature_engineering" | "generate_report" | "FINISH", "reason": "<string>"}
 """
 
-
-def _supervisor_core(state: AgentState, final_goto: str):
-    """
-    Shared supervisor decision logic.
-
-    Parameters
-    ----------
-    state : AgentState
-    final_goto : str
-        The node name to route to once all three stages (cleaning, eda,
-        feature_engineering) are complete.  For the standalone pipeline this
-        is ``"generate_report"``; for the year-worker subgraph this is
-        ``"__end__"`` (i.e. `END`).
-    """
-    check = state.get('check_start', True)
+def supervisor_core(state: AgentState):
     run_id = state.get('run_id', '') 
-    if check == True: 
+    if run_id == "": 
         run_id = f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:6]}" 
 
     # Enforce graph sequence: cleaning -> eda -> feature_engineering -> final
@@ -79,22 +65,19 @@ def _supervisor_core(state: AgentState, final_goto: str):
             ))
         ]
         decision = llm_router.invoke(messages)
-        goto = decision.get("next", final_goto)
+        goto = decision.get("next", "END")
         reason = decision.get("reason", "Proceeding to next step")
 
-        # Enforce sequence: never let the LLM re-route to a stage that is already done,
-        # otherwise the pipeline can loop forever re-running completed subgraphs.
         if goto == "cleaning" and state.get("cleaning_done"):
-            goto, reason = final_goto, "cleaning already done; forcing final stage."
+            goto, reason = "ratio_trend_engine", "cleaning already done; proceeding to ratio analysis."
         elif goto == "eda" and state.get("eda_done"):
-            goto, reason = final_goto, "eda already done; forcing final stage."
+            goto, reason = "ratio_trend_engine", "eda already done; proceeding to ratio analysis."
         elif goto == "feature_engineering" and state.get("engineer_done"):
-            goto, reason = final_goto, "feature_engineering already done; forcing final stage."
+            goto, reason = "ratio_trend_engine", "feature_engineering already done; proceeding to ratio analysis."
     
-    if goto == "FINISH":
-        goto = END
+    if goto in ("FINISH", "generate_report", "END"):
+        goto = "ratio_trend_engine"
 
-    # Map goto -> action_type for downstream nodes
     action_type = None
     if goto == "cleaning":
         action_type = "cleaning"
@@ -105,38 +88,17 @@ def _supervisor_core(state: AgentState, final_goto: str):
 
     update_dict = {  
         "run_id": run_id, 
-        "check_start": False, 
         "messages": [HumanMessage(content=f"[Supervisor] -> {goto}: {reason}")],
     }
     if action_type:
         update_dict["action_type"] = action_type
 
-    return goto, update_dict
-
-
-def supervisor_node(state: AgentState) -> Command[Literal["cleaning", "eda", "feature_engineering", "generate_report", "__end__"]]:
-    """Supervisor for the standalone single-file pipeline (script.py)."""
-    goto, update_dict = _supervisor_core(state, final_goto="generate_report")
     return Command(goto=goto, update=update_dict)
-
-
-def supervisor_node_subgraph(state: AgentState) -> Command[Literal["cleaning", "eda", "feature_engineering", "__end__"]]:
-    """
-    Supervisor for the year_worker subgraph.
-    
-    When all stages are done it routes to __end__ instead of generate_report,
-    because generate_report lives in the top-level financial graph (not inside
-    the per-year subgraph).
-    """
-    goto, update_dict = _supervisor_core(state, final_goto=END)
-    return Command(goto=goto, update=update_dict)
-
 
 def route_after_validation(state: AgentState) -> Literal["executor", "supervisor"]:
     if state.get("action_status") is False:
         return "supervisor"
     return "executor"
-
 
 def route_after_review(state: AgentState) -> Literal["executor", "validation", "supervisor"]:
     if state.get("review_decision", "") != "retry":

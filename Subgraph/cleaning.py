@@ -5,52 +5,45 @@ from langchain_core.messages import SystemMessage, ToolMessage, HumanMessage
 from langchain_deepseek import ChatDeepSeek
 from langchain_core.tools import tool, InjectedToolCallId
 from langgraph.prebuilt import ToolNode 
-import polars as pl
+import pandas as pd
 from langgraph.types import Command
 from Class.AgentState import AgentState
-from Class.CleaningAction import CleaningAction, CleaningActionType
+from Class.SupervisorAction.CleaningAction import CleaningAction, CleaningActionType
+
 load_dotenv()
 
 llm = ChatDeepSeek(model="deepseek-v4-flash")
 
-def get_lf(file_path: str, file_format: str):
+def read_df(file_path: str, file_format: str) -> pd.DataFrame:
     if file_format == "csv":
-        lf = pl.scan_csv(file_path)
+        df = pd.read_csv(file_path)
     elif file_format == "parquet":
-        lf = pl.scan_parquet(file_path)
+        df = pd.read_parquet(file_path)
     elif file_format == "json":
-        lf = pl.scan_ndjson(file_path)
+        df = pd.read_json(file_path, lines=True)
     else:
         raise ValueError(f"Don't support {file_format}")
-    return lf
+    return df
 
 @tool
 def profile_dataset(file_path: str, file_format: str, tool_call_id: Annotated[str, InjectedToolCallId]) -> dict:
     """
-    Scan a dataset (lazy, not loading the entire dataset into RAM) and return statistics:
+    Read a dataset and return statistics:
     dtypes, number of nulls for both numerical and categorical columns and unique values for categorical column.
     Used to detect problems before suggesting cleaning.
     """
-    if file_format == "csv":
-        lf = pl.scan_csv(file_path)
-    elif file_format == "parquet":
-        lf = pl.scan_parquet(file_path)
-    elif file_format == "json":
-        lf = pl.scan_ndjson(file_path)
-    else:
-        raise ValueError(f"Don't support {file_format}")
-    
-    schema = lf.collect_schema()
-    stats = lf.select([
-        pl.all().null_count().name.suffix("_nulls"),
-        pl.all().n_unique().name.suffix("_nunique"),
-    ]).collect(engine='streaming')
+    df = read_df(file_path, file_format)
+
+    stats = {}
+    for col in df.columns:
+        stats[f"{col}_nulls"] = int(df[col].isnull().sum())
+        stats[f"{col}_nunique"] = int(df[col].nunique())
 
     res = {
-        "columns": list(schema.names()),
-        "dtypes": {k: str(v) for k, v in schema.items()},
-        "stats": stats.to_dicts()[0],
-        "n_rows": lf.select(pl.len()).collect().item()
+        "columns": df.columns.tolist(),
+        "dtypes": {col: str(dtype) for col, dtype in df.dtypes.items()},
+        "stats": stats,
+        "n_rows": len(df)
     }
 
     return Command(update={
@@ -75,9 +68,10 @@ def propose_action_node(state: AgentState) -> AgentState:
     file_format = state.get('file_format', 'csv')
     dataset_profile = state.get('dataset_profile', {})
     valid_cols = dataset_profile.get('columns', [])
+    
     if not valid_cols and file_path:
         try:
-            valid_cols = list(get_lf(file_path, file_format).collect_schema().names())
+            valid_cols = read_df(file_path, file_format).columns.tolist()
         except Exception:
             valid_cols = []
 
@@ -129,7 +123,7 @@ def route_tool_or_finish(state) -> Literal["cleaning_tools", "propose_action"]:
         return "cleaning_tools"
     return "propose_action"
 
-def route_after_propose(state: AgentState) -> Literal["cleaning_agent", END]: #type:ignore
+def route_after_propose(state: AgentState) -> Literal["cleaning_agent", "__end__"]: 
     if state.get("cleaning_done") == True:
         return END
     return "cleaning_agent" 

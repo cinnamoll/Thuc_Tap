@@ -24,16 +24,16 @@ class CleaningAction(BaseModel):
 
     @field_validator("column", "reason", mode="before")
     @classmethod
-    def convert_none_to_str(cls, v):
-        if v is None:
+    def convert_none_to_str(cls, value):
+        if value is None:
             return ""
-        return v
+        return value
 
     @field_validator("actionType", mode="before")
     @classmethod
-    def map_action_type(cls, v):
-        if isinstance(v, str):
-            v_lower = v.lower()
+    def map_action_type(cls, value):
+        if isinstance(value, str):
+            v_lower = value.lower()
             if v_lower in ("fill_missing", "impute", "fillna", "impute_missing"):
                 return CleaningActionType.IMPUTE_MODE
             elif v_lower in ("drop", "remove_rows"):
@@ -42,11 +42,11 @@ class CleaningAction(BaseModel):
                 return CleaningActionType.DROP_COLUMN
             elif v_lower in ("change_dtype", "convert_dtype"):
                 return CleaningActionType.CAST_DTYPE
-        return v
+        return value
 
-    @field_validator("target_dtype")
+    @field_validator("target_dtype", mode='after')
     @classmethod
-    def require_dtype_for_cast(cls, v, info):
-        if info.data.get("actionType") == CleaningActionType.CAST_DTYPE and not v:
+    def require_dtype_for_cast(cls, value, info):
+        if info.data.get("actionType") == CleaningActionType.CAST_DTYPE and not value:
             raise ValueError("cast_dtype needs target_dtype")
-        return v
+        return value

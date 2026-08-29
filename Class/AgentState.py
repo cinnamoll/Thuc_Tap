@@ -1,11 +1,11 @@
-from typing import Annotated, Sequence, List, Optional, TypedDict, Literal, Union
+from typing import Annotated, Sequence, List, Dict, Any, Optional, TypedDict, Literal, Union
 from langchain_core.messages import BaseMessage
 from operator import add as add_messages
 import operator
 
-from Class.CleaningAction import CleaningAction
-from Class.EDAInsight import EDAInsight
-from Class.EngineeringAction import EngineeringAction
+from Class.SupervisorAction.CleaningAction import CleaningAction
+from Class.SupervisorAction.EDAInsight import EDAInsight
+from Class.SupervisorAction.EngineeringAction import EngineeringAction
 from Class.Report import Report
 
 def dedupe_list(left: Optional[List[str]], right: Optional[List[str]]) -> List[str]:
@@ -28,7 +28,6 @@ class AgentState(TypedDict):
     file_path: str
     file_format: str
     run_id:str
-    check_start:bool
     dataset_profile: dict
     univariate: Annotated[List[dict], operator.add]
     
@@ -60,3 +59,7 @@ class AgentState(TypedDict):
     manager_report: Optional[Report]
     pending_question: Optional[str]
     output_path: Optional[str]
+
+    # Accounting validation fields (used by validator for identity checks)
+    harmonized_dataset: Dict[str, Any]
+    validation_flags: List[Dict[str, Any]]
