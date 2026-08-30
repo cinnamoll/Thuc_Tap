@@ -28,7 +28,7 @@ class FinancialReportState(TypedDict):
 
     # Schema Harmonizer — unified & currency-normalised dataset
     harmonized_dataset: Dict[str, Any]
-    currency_unit: str  # e.g. 'VND_BILLION'
+    currency_unit: str = 'VND_BILLION'
 
     # ── Accounting validation ──────────────────────────────────────────────────
     validation_flags: List[AccountingValidationFlag]

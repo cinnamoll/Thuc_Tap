@@ -2,116 +2,109 @@ import re
 
 class FinancialNotesExtractor:
     sections_regex = {
-            "dac_diem_hoat_dong": re.compile(
-                r"(?i)(?:(?:I|1)\.?\s+)?(?:ĐẶC\s+DIỂM\s+HOẠT\s+ĐỘNG\s+CỦA\s+DOANH\s+NGHIỆP|CHARACTERISTICS\s+OF\s+(?:BUSINESS\s+ACTIVITIES|THE\s+STATED\s+ENTERPRISE|THE\s+ENTERPRISE))[\s\S]*?(?=(?:(?:II|2)\.?\s+)?(?:KỲ\s+KẾ\s+TOÁN|ACCOUNTING\s+PERIOD))"
-            ),
-            "ky_ke_toan_tien_te": re.compile(
-                r"(?i)(?:(?:II|2)\.?\s+)?(?:KỲ\s+KẾ\s+TOÁN[,\s]+ĐƠN\s+VỊ\s+TIỀN\s+TỆ|ACCOUNTING\s+PERIOD[,\s]+CURRENCY\s+UNIT)[\s\S]*?(?=(?:(?:III|3)\.?\s+)?(?:CHUẨN\s+MỰC\s+VÀ\s+CHẾ\s+ĐỘ\s+KẾ\s+TOÁN|ACCOUNTING\s+SYSTEM|ACCOUNTING\s+STANDARDS))"
-            ),
-            "chuan_muc_che_do_ke_toan": re.compile(
-                r"(?i)(?:(?:III|3)\.?\s+)?(?:CHUẨN\s+MỰC\s+VÀ\s+CHẾ\s+ĐỘ\s+KẾ\s+TOÁN|ACCOUNTING\s+SYSTEM|ACCOUNTING\s+STANDARDS)[\s\S]*?(?=(?:(?:IV|4)\.?\s+)?(?:CÁC\s+CHÍNH\s+SÁCH\s+KẾ\s+TOÁN|SUMMARY\s+OF\s+SIGNIFICANT\s+ACCOUNTING\s+POLICIES|SUMMARY\s+OF\s+ACCOUNTING\s+POLICIES))"
-            ),
-            "chinh_sach_ke_toan": re.compile(
-                r"(?i)(?:(?:IV|4)\.?\s+)?(?:CÁC\s+CHÍNH\s+SÁCH\s+KẾ\s+TOÁN|SUMMARY\s+OF\s+SIGNIFICANT\s+ACCOUNTING\s+POLICIES|SUMMARY\s+OF\s+ACCOUNTING\s+POLICIES)[\s\S]*?(?=(?:(?:V|5)\.?\s+)?(?:THÔNG\s+TIN\s+BỔ\s+SUNG\s+CHO\s+CÁC\s+KHOẢN\s+MỤC|ADDITIONAL\s+INFORMATION\s+FOR\s+ITEMS\s+SHOWN\s+IN\s+THE))"
-            ),
-            "bo_sung_bang_can_doi": re.compile(
-                r"(?i)(?:(?:V|5)\.?\s+)?(?:THÔNG\s+TIN\s+BỔ\s+SUNG\s+CHO\s+CÁC\s+KHOẢN\s+MỤC\s+TRÌNH\s+BÀY\s+TRONG\s+BẢNG\s+CÂN\s+ĐỐI|ADDITIONAL\s+INFORMATION\s+FOR\s+ITEMS\s+SHOWN\s+IN\s+THE\s+(?:CONSOLIDATED\s+|SEPARATE\s+)?BALANCE\s+SHEET)[\s\S]*?(?=(?:(?:VI|6)\.?\s+)?(?:THÔNG\s+TIN\s+BỔ\s+SUNG\s+CHO\s+CÁC\s+KHOẢN\s+MỤC\s+TRÌNH\s+BÀY\s+TRONG\s+BÁO\s+CÁO\s+KẾT\s+QUẢ|ADDITIONAL\s+INFORMATION\s+FOR\s+ITEMS\s+SHOWN\s+IN\s+THE\s+(?:CONSOLIDATED\s+|SEPARATE\s+)?(?:INCOME\s+STATEMENT|BUSINESS\s+PERFORMANCE\s+REPORT)))"
-            ),
-            "bo_sung_ket_qua_kinh_doanh": re.compile(
-                r"(?i)(?:(?:VI|6)\.?\s+)?(?:THÔNG\s+TIN\s+BỔ\s+SUNG\s+CHO\s+CÁC\s+KHOẢN\s+MỤC\s+TRÌNH\s+BÀY\s+TRONG\s+BÁO\s+CÁO\s+KẾT\s+QUẢ|ADDITIONAL\s+INFORMATION\s+FOR\s+ITEMS\s+SHOWN\s+IN\s+THE\s+(?:CONSOLIDATED\s+|SEPARATE\s+)?(?:INCOME\s+STATEMENT|BUSINESS\s+PERFORMANCE\s+REPORT))[\s\S]*?(?=(?:(?:VII|7)\.?\s+)?(?:THÔNG\s+TIN\s+BỔ\s+SUNG\s+CHO\s+CÁC\s+KHOẢN\s+MỤC\s+TRÌNH\s+BÀY\s+TRONG\s+BÁO\s+CÁO\s+LƯU\s+CHUYỂN\s+TIỀN\s+TỆ|ADDITIONAL\s+INFORMATION\s+FOR\s+ITEMS\s+SHOWN\s+IN\s+THE\s+(?:CONSOLIDATED\s+|SEPARATE\s+)?CASH\s+FLOWS?\s+STATEMENT))"
-            ),
-            "bo_sung_luu_chuyen_tien_te": re.compile(
-                r"(?i)(?:(?:VII|7)\.?\s+)?(?:THÔNG\s+TIN\s+BỔ\s+SUNG\s+CHO\s+CÁC\s+KHOẢN\s+MỤC\s+TRÌNH\s+BÀY\s+TRONG\s+BÁO\s+CÁO\s+LƯU\s+CHUYỂN\s+TIỀN\s+TỆ|ADDITIONAL\s+INFORMATION\s+FOR\s+ITEMS\s+SHOWN\s+IN\s+THE\s+(?:CONSOLIDATED\s+|SEPARATE\s+)?CASH\s+FLOWS?\s+STATEMENT)[\s\S]*?(?=(?:(?:VIII|8)\.?\s+)?(?:NHỮNG\s+THÔNG\s+TIN\s+KHÁC|OTHER\s+INFORMATION))"
-            ),
-            "nhung_thong_tin_khac": re.compile(
-                r"(?i)(?:(?:VIII|8)\.?\s+)?(?:NHỮNG\s+THÔNG\s+TIN\s+KHÁC|OTHER\s+INFORMATION)[\s\S]+?(?=(?:Người\s+lập|Kế\s+toán\s+trưởng|Tổng\s+Giám\s+đốc|Prepared\s+by|Chief\s+Accountant|General\s+Director|Approved\s+by)|$)"
-            )
+        "dac_diem_hoat_dong": re.compile(
+            r"(?i)(?:(?:I|1)\.?\s+)?(?:CHARACTERISTICS\s+OF\s+(?:BUSINESS\s+ACTIVITIES|THE\s+STATED\s+ENTERPRISE|THE\s+ENTERPRISE))[\s\S]*?(?=(?:(?:II|2)\.?\s+)?(?:ACCOUNTING\s+PERIOD))"
+        ),
+        "ky_ke_toan_tien_te": re.compile(
+            r"(?i)(?:(?:II|2)\.?\s+)?(?:ACCOUNTING\s+PERIOD[,\s]+CURRENCY\s+UNIT)[\s\S]*?(?=(?:(?:III|3)\.?\s+)?(?:ACCOUNTING\s+SYSTEM|ACCOUNTING\s+STANDARDS))"
+        ),
+        "chuan_muc_che_do_ke_toan": re.compile(
+            r"(?i)(?:(?:III|3)\.?\s+)?(?:ACCOUNTING\s+SYSTEM|ACCOUNTING\s+STANDARDS)[\s\S]*?(?=(?:(?:IV|4)\.?\s+)?(?:SUMMARY\s+OF\s+SIGNIFICANT\s+ACCOUNTING\s+POLICIES|SUMMARY\s+OF\s+ACCOUNTING\s+POLICIES))"
+        ),
+        "chinh_sach_ke_toan": re.compile(
+            r"(?i)(?:(?:IV|4)\.?\s+)?(?:SUMMARY\s+OF\s+SIGNIFICANT\s+ACCOUNTING\s+POLICIES|SUMMARY\s+OF\s+ACCOUNTING\s+POLICIES)[\s\S]*?(?=(?:(?:V|5)\.?\s+)?(?:ADDITIONAL\s+INFORMATION\s+FOR\s+ITEMS\s+SHOWN\s+IN\s+THE))"
+        ),
+        "bo_sung_bang_can_doi": re.compile(
+            r"(?i)(?:(?:V|5)\.?\s+)?(?:ADDITIONAL\s+INFORMATION\s+FOR\s+ITEMS\s+SHOWN\s+IN\s+THE\s+(?:CONSOLIDATED\s+|SEPARATE\s+)?BALANCE\s+SHEET)[\s\S]*?(?=(?:(?:VI|6)\.?\s+)?(?:ADDITIONAL\s+INFORMATION\s+FOR\s+ITEMS\s+SHOWN\s+IN\s+THE\s+(?:CONSOLIDATED\s+|SEPARATE\s+)?(?:INCOME\s+STATEMENT|BUSINESS\s+PERFORMANCE\s+REPORT)))"
+        ),
+        "bo_sung_ket_qua_kinh_doanh": re.compile(
+            r"(?i)(?:(?:VI|6)\.?\s+)?(?:ADDITIONAL\s+INFORMATION\s+FOR\s+ITEMS\s+SHOWN\s+IN\s+THE\s+(?:CONSOLIDATED\s+|SEPARATE\s+)?(?:INCOME\s+STATEMENT|BUSINESS\s+PERFORMANCE\s+REPORT))[\s\S]*?(?=(?:(?:VII|7)\.?\s+)?(?:ADDITIONAL\s+INFORMATION\s+FOR\s+ITEMS\s+SHOWN\s+IN\s+THE\s+(?:CONSOLIDATED\s+|SEPARATE\s+)?CASH\s+FLOWS?\s+STATEMENT))"
+        ),
+        "bo_sung_luu_chuyen_tien_te": re.compile(
+            r"(?i)(?:(?:VII|7)\.?\s+)?(?:ADDITIONAL\s+INFORMATION\s+FOR\s+ITEMS\s+SHOWN\s+IN\s+THE\s+(?:CONSOLIDATED\s+|SEPARATE\s+)?CASH\s+FLOWS?\s+STATEMENT)[\s\S]*?(?=(?:(?:VIII|8)\.?\s+)?(?:OTHER\s+INFORMATION))"
+        ),
+        "nhung_thong_tin_khac": re.compile(
+            r"(?i)(?:(?:VIII|8)\.?\s+)?(?:OTHER\s+INFORMATION)[\s\S]+?(?=(?:Prepared\s+by|Chief\s+Accountant|General\s+Director|Approved\s+by)|$)"
+        ),
     }
 
     sub_regex_dac_diem_hoat_dong = {
-            "hinh_thuc_so_huu_von": re.compile(
-                r"(?i)(?:Hình\s+thức\s+sở\s+hữu\s+vốn|Form\s+of\s+ownership|Capital\s+ownership)[\s\S]*?(?=(?:Lĩnh\s+vực\s+kinh\s+doanh|Ngành\s+nghề\s+kinh\s+doanh|Chu\s+kỳ\s+sản\s+xuất|Business\s+fields|Business\s+lines|Normal\s+production))"
-            ),
-            "linh_vuc_kinh_doanh": re.compile(
-                r"(?i)(?:Lĩnh\s+vực\s+kinh\s+doanh|Business\s+fields|Business\s+activity)[\s\S]*?(?=(?:Ngành\s+nghề\s+kinh\s+doanh|Chu\s+kỳ\s+sản\s+xuất|Business\s+lines|Normal\s+production))"
-            ),
-            "nganh_nghe_kinh_doanh": re.compile(
-                r"(?i)(?:Ngành\s+nghề\s+kinh\s+doanh|Business\s+lines|Principal\s+activities)[\s\S]*?(?=(?:Chu\s+kỳ\s+sản\s+xuất|Normal\s+production|Operating\s+cycle))"
-            ),
-            "chu_ky_sxkd_thong_thuong": re.compile(
-                r"(?i)(?:Chu\s+kỳ\s+sản\s+xuất[,\s]+kinh\s+doanh\s+thông\s+thường|Normal\s+production\s+and\s+business\s+cycle|Operating\s+cycle)[\s\S]*?(?=(?:Đặc\s+điểm\s+hoạt\s+động|Cấu\s+trúc\s+doanh\s+nghiep|Corporate\s+structure|Operating\s+features))"
-            ),
-            "dac_diem_anh_huong_bctc": re.compile(
-                r"(?i)(?:Đặc\s+điểm\s+hoạt\s+động\s+của\s+doanh\s+nghiệp\s+trong\s+năm\s+tài\s+chính\s+có\s+ảnh\s+hưởng|Operating\s+features\s+affecting\s+the\s+financial\s+statements)[\s\S]*?(?=(?:Cấu\s+trúc\s+doanh\s+nghiệp|Corporate\s+structure|Subsidiaries))"
-            ),
-            "cau_truc_doanh_nghiep": re.compile(
-                r"(?i)(?:Cấu\s+trúc\s+doanh\s+nghiệp|Danh\s+sách\s+các\s+công\s+ty\s+con|Corporate\s+structure|List\s+of\s+subsidiaries|Subsidiaries)[\s\S]*?(?=(?:Tuyên\s+bố\s+về\s+khả\s+năng\s+so\s+sánh|Statement\s+on\s+comparability|Comparability\s+of\s+information|$))"
-            ),
-            "tuyen_bo_so_sanh_thong_tin": re.compile(
-                r"(?i)(?:Tuyên\s+bố\s+về\s+khả\s+năng\s+so\s+sánh|Khả\s+năng\s+so\s+sánh\s+thông\s+tin|Statement\s+on\s+comparability|Comparability\s+of\s+information)[\s\S]+?$"
-            )
+        "hinh_thuc_so_huu_von": re.compile(
+            r"(?i)(?:Form\s+of\s+ownership|Capital\s+ownership)[\s\S]*?(?=(?:Business\s+fields|Business\s+lines|Normal\s+production))"
+        ),
+        "linh_vuc_kinh_doanh": re.compile(
+            r"(?i)(?:Business\s+fields|Business\s+activity)[\s\S]*?(?=(?:Business\s+lines|Normal\s+production))"
+        ),
+        "nganh_nghe_kinh_doanh": re.compile(
+            r"(?i)(?:Business\s+lines|Principal\s+activities)[\s\S]*?(?=(?:Normal\s+production|Operating\s+cycle))"
+        ),
+        "chu_ky_sxkd_thong_thuong": re.compile(
+            r"(?i)(?:Normal\s+production\s+and\s+business\s+cycle|Operating\s+cycle)[\s\S]*?(?=(?:Corporate\s+structure|Operating\s+features))"
+        ),
+        "dac_diem_anh_huong_bctc": re.compile(
+            r"(?i)(?:Operating\s+features\s+affecting\s+the\s+financial\s+statements)[\s\S]*?(?=(?:Corporate\s+structure|Subsidiaries))"
+        ),
+        "cau_truc_doanh_nghiep": re.compile(
+            r"(?i)(?:Corporate\s+structure|List\s+of\s+subsidiaries|Subsidiaries)[\s\S]*?(?=(?:Statement\s+on\s+comparability|Comparability\s+of\s+information|$))"
+        ),
+        "tuyen_bo_so_sanh_thong_tin": re.compile(
+            r"(?i)(?:Statement\s+on\s+comparability|Comparability\s+of\s+information)[\s\S]+?$"
+        ),
     }
 
     sub_regex_bo_sung_bang_can_doi = {
-            "tien": re.compile(
-                r"(?i)(?:\b\d+\.?\s+)?(?:Tiền\s+và\s+các\s+khoản\s+tương\s+đương\s+tiền|Cash\s+and\s+cash\s+equivalents)[\s\S]*?(?=(?:\b\d+\.?\s+)?(?:Các\s+khoản\s+đầu\s+tư\s+tài\s+chính|Financial\s+investments))"
-            ),
-            "dau_tu_tai_chinh": re.compile(
-                r"(?i)(?:\b\d+\.?\s+)?(?:Các\s+khoản\s+đầu\s+tư\s+tài\s+chính|Financial\s+investments)[\s\S]*?(?=(?:\b\d+\.?\s+)?(?:Phải\s+thu\s+(?:ngắn\s+hạn\s+)?của\s+khách\s+hàng|Trade\s+receivables))"
-            ),
-            "phai_thu_khach_hang": re.compile(
-                r"(?i)(?:\b\d+\.?\s+)?(?:Phải\s+thu\s+(?:ngắn\s+hạn\s+)?của\s+khách\s+hàng|Trade\s+receivables|Short-term\s+trade\s+receivables)[\s\S]*?(?=(?:\b\d+\.?\s+)?(?:Phải\s+thu\s+khác|Other\s+receivables))"
-            ),
-            "phai_thu_khac": re.compile(
-                r"(?i)(?:\b\d+\.?\s+)?(?:Phải\s+thu\s+khác|Other\s+receivables)[\s\S]*?(?=(?:\b\d+\.?\s+)?(?:Hàng\s+tồn\s+kho|Hàng\s+tôn\s+kho|Inventories))"
-            ),
-            "tai_san_thieu_cho_xu_ly": re.compile(
-                r"(?i)(?:\b\d+\.?\s+)?(?:Tài\s+sản\s+thiếu\s+chờ\s+xử\s+lý|Assets\s+awaiting\s+resolution)[\s\S]*?(?=(?:\b\d+\.?\s+)?(?:Nợ\s+xấu|Dự\s+phòng\s+nợ\s+phải\s+thu\s+khó\s+đòi|Doubtful\s+debts|Bad\s+debts))"
-            ),
-            "no_xau": re.compile(
-                r"(?i)(?:\b\d+\.?\s+)?(?:Nợ\s+xấu|Nợ\s+phải\s+thu\s+quá\s+hạn|Dự\s+phòng\s+nợ\s+phải\s+thu\s+khó\s+đòi|Doubtful\s+debts|Bad\s+debts)[\s\S]*?(?=(?:\b\d+\.?\s+)?(?:Hàng\s+tồn\s+kho|Hàng\s+tôn\s+kho|Inventories))"
-            ),
-            "hang_ton_kho": re.compile(
-                r"(?i)(?:\b\d+\.?\s+)?(?:Hàng\s+tồn\s+kho|Hàng\s+tôn\s+kho|Inventories)[\s\S]*?(?=(?:\b\d+\.?\s+)?(?:Tài\s+sản\s+cố\s+định|Tangible\s+fixed\s+assets|Fixed\s+assets))"
-            ),
-            "tang_giam_tscd_huu_hinh": re.compile(
-                r"(?i)(?:\b\d+\.?\s+)?(?:Tài\s+sản\s+cố\s+định\s+hữu\s+hình|Tangible\s+fixed\s+assets)[\s\S]*?(?=(?:\b\d+\.?\s+)?(?:Vay\s+và\s+nợ\s+thuê\s+tài\s+chính|Loans\s+and\s+finance\s+lease\s+liabilities))"
-            ),
-            "vay_va_no_thue_tai_chinh": re.compile(
-                r"(?i)(?:\b\d+\.?\s+)?(?:Vay\s+và\s+nợ\s+thuê\s+tài\s+chính|Loans\s+and\s+finance\s+lease\s+liabilities)[\s\S]+?$"
-            )
+        "tien": re.compile(
+            r"(?i)(?:\b\d+\.?\s+)?(?:Cash\s+and\s+cash\s+equivalents)[\s\S]*?(?=(?:\b\d+\.?\s+)?(?:Financial\s+investments))"
+        ),
+        "dau_tu_tai_chinh": re.compile(
+            r"(?i)(?:\b\d+\.?\s+)?(?:Financial\s+investments)[\s\S]*?(?=(?:\b\d+\.?\s+)?(?:Trade\s+receivables))"
+        ),
+        "phai_thu_khach_hang": re.compile(
+            r"(?i)(?:\b\d+\.?\s+)?(?:Trade\s+receivables|Short-term\s+trade\s+receivables)[\s\S]*?(?=(?:\b\d+\.?\s+)?(?:Other\s+receivables))"
+        ),
+        "phai_thu_khac": re.compile(
+            r"(?i)(?:\b\d+\.?\s+)?(?:Other\s+receivables)[\s\S]*?(?=(?:\b\d+\.?\s+)?(?:Inventories))"
+        ),
+        "tai_san_thieu_cho_xu_ly": re.compile(
+            r"(?i)(?:\b\d+\.?\s+)?(?:Assets\s+awaiting\s+resolution)[\s\S]*?(?=(?:\b\d+\.?\s+)?(?:Doubtful\s+debts|Bad\s+debts))"
+        ),
+        "no_xau": re.compile(
+            r"(?i)(?:\b\d+\.?\s+)?(?:Doubtful\s+debts|Bad\s+debts)[\s\S]*?(?=(?:\b\d+\.?\s+)?(?:Inventories))"
+        ),
+        "hang_ton_kho": re.compile(
+            r"(?i)(?:\b\d+\.?\s+)?(?:Inventories)[\s\S]*?(?=(?:\b\d+\.?\s+)?(?:Tangible\s+fixed\s+assets|Fixed\s+assets))"
+        ),
+        "tang_giam_tscd_huu_hinh": re.compile(
+            r"(?i)(?:\b\d+\.?\s+)?(?:Tangible\s+fixed\s+assets)[\s\S]*?(?=(?:\b\d+\.?\s+)?(?:Loans\s+and\s+finance\s+lease\s+liabilities))"
+        ),
+        "vay_va_no_thue_tai_chinh": re.compile(
+            r"(?i)(?:\b\d+\.?\s+)?(?:Loans\s+and\s+finance\s+lease\s+liabilities)[\s\S]+?$"
+        ),
     }
 
     sub_regex_nhung_thong_tin_khac = {
-            "no_tiem_tang_cam_ket": re.compile(
-                r"(?i)(?:Những\s+khoản\s+nợ\s+tiềm\s+tàng[,\s]+khoản\s+cam\s+kết|Contingent\s+liabilities\s+and\s+commitments|Contingent\s+liabilities)[\s\S]*?(?=(?:Sự\s+kiện\s+phát\s+sinh\s+sau\s+ngày\s+kết\s+thúc|Events\s+after\s+the\s+reporting\s+period|Events\s+after\s+the\s+balance\s+sheet\s+date))"
-            ),
-            "su_kien_sau_ngay_ket_thuc": re.compile(
-                r"(?i)(?:Sự\s+kiện\s+phát\s+sinh\s+sau\s+ngày\s+kết\s+thúc|Events\s+after\s+the\s+reporting\s+period|Events\s+after\s+the\s+balance\s+sheet\s+date)[\s\S]*?(?=(?:Thông\s+tin\s+về\s+các\s+bên\s+liên\s+quan|Transactions\s+and\s+balances\s+with\s+related\s+parties|Related\s+parties))"
-            ),
-            "ben_lien_quan": re.compile(
-                r"(?i)(?:Thông\s+tin\s+về\s+các\s+bên\s+liên\s+quan|Transactions\s+and\s+balances\s+with\s+related\s+parties|Related\s+parties)[\s\S]*?(?=(?:Báo\s+cáo\s+bộ\s+phận|Trình\s+bày\s+tài\s+sản[,\s]+doanh\s+thu[,\s]+kết\s+quả\s+theo\s+bộ\s+phận|Segment\s+reporting))"
-            ),
-            "bao_cao_bo_phan": re.compile(
-                r"(?i)(?:Báo\s+cáo\s+bộ\s+phận|Trình\s+bày\s+tài\s+sản[,\s]+doanh\s+thu[,\s]+kết\s+quả\s+theo\s+bộ\s+phận|Segment\s+reporting)[\s\S]*?(?=(?:Thông\s+tin\s+so\s+sánh|Comparative\s+figures|Comparative\s+information))"
-            ),
-            "thong_tin_so_sanh": re.compile(
-                r"(?i)(?:Thông\s+tin\s+so\s+sánh|Số\s+liệu\s+so\s+sánh|Comparative\s+figures|Comparative\s+information)[\s\S]*?(?=(?:Thông\s+tin\s+về\s+hoạt\s+động\s+liên\s+tục|Going\s+concern\s+assumption|Going\s+concern))"
-            ),
-            "thong_tin_hoat_dong_lien_tuc": re.compile(
-                r"(?i)(?:Thông\s+tin\s+về\s+hoạt\s+động\s+liên\s+tục|Giả\s+định\s+hoạt\s+động\s+liên\s+tục|Going\s+concern\s+assumption|Going\s+concern)[\s\S]*?(?=(?:Những\s+thông\s+tin\s+khác|Other\s+information|$))"
-            ),
-            "thong_tin_khac_bo_sung": re.compile(
-                r"(?i)(?:Những\s+thông\s+tin\s+khác|Other\s+information)[\s\S]+?$"
-            )
+        "no_tiem_tang_cam_ket": re.compile(
+            r"(?i)(?:Contingent\s+liabilities\s+and\s+commitments|Contingent\s+liabilities)[\s\S]*?(?=(?:Events\s+after\s+the\s+reporting\s+period|Events\s+after\s+the\s+balance\s+sheet\s+date))"
+        ),
+        "su_kien_sau_ngay_ket_thuc": re.compile(
+            r"(?i)(?:Events\s+after\s+the\s+reporting\s+period|Events\s+after\s+the\s+balance\s+sheet\s+date)[\s\S]*?(?=(?:Transactions\s+and\s+balances\s+with\s+related\s+parties|Related\s+parties))"
+        ),
+        "ben_lien_quan": re.compile(
+            r"(?i)(?:Transactions\s+and\s+balances\s+with\s+related\s+parties|Related\s+parties)[\s\S]*?(?=(?:Segment\s+reporting))"
+        ),
+        "bao_cao_bo_phan": re.compile(
+            r"(?i)(?:Segment\s+reporting)[\s\S]*?(?=(?:Comparative\s+figures|Comparative\s+information))"
+        ),
+        "thong_tin_so_sanh": re.compile(
+            r"(?i)(?:Comparative\s+figures|Comparative\s+information)[\s\S]*?(?=(?:Going\s+concern\s+assumption|Going\s+concern))"
+        ),
+        "thong_tin_hoat_dong_lien_tuc": re.compile(
+            r"(?i)(?:Going\s+concern\s+assumption|Going\s+concern)[\s\S]*?(?=(?:Other\s+information|$))"
+        ),
+        "thong_tin_khac_bo_sung": re.compile(
+            r"(?i)(?:Other\s+information)[\s\S]+?$"
+        ),
     }
-
-    def clean_text(self, text):
-        if not text:
-            return ""
-        text = re.sub(r'[ \t]+', ' ', text)
-        text = re.sub(r'\r\n', '\n', text)
-        return text
 
     def slice_section(self, full_text, regex):
         match = regex.search(full_text)
@@ -124,8 +117,12 @@ class FinancialNotesExtractor:
         return match.group(0).strip() if match else "Không có thông tin chi tiết / Information not available."
 
     def extract_all_to_format(self, full_text):
-        cleaned_text = self.clean_text(full_text)
+        if not full_text:
+            return ""
         
+        cleaned_text = re.sub(r'[ \t]+', ' ', full_text)
+        cleaned_text = re.sub(r'\r\n', '\n', full_text)
+
         sec_dac_diem = self.slice_section(cleaned_text, self.sections_regex["dac_diem_hoat_dong"])
         sec_ky_ke_toan = self.slice_section(cleaned_text, self.sections_regex["ky_ke_toan_tien_te"])
         sec_chuan_muc = self.slice_section(cleaned_text, self.sections_regex["chuan_muc_che_do_ke_toan"])

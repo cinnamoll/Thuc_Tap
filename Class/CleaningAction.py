@@ -16,6 +16,8 @@ class CleaningAction(BaseModel):
     file_format: Optional[str] = None
     reason: Optional[str] = ""
     column: Optional[str] = ""
+    line_item_canonical: Optional[str] = None
+    statement_type: Optional[str] = None
     rows_affected: Optional[int] = None
     rows_ratio: Optional[float] = None
     risk_level: Optional[Literal["low", "medium", "high"]] = None

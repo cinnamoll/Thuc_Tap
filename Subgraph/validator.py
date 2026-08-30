@@ -6,9 +6,9 @@ from langgraph.types import interrupt
 from pydantic import ValidationError
 
 from Class.AgentState import AgentState
-from Class.SupervisorAction.CleaningAction import CleaningAction, CleaningActionType
-from Class.SupervisorAction.EDAInsight import EDAInsight
-from Class.SupervisorAction.EngineeringAction import EngineeringAction, EncodingType, BinningType
+from Class.CleaningAction import CleaningAction, CleaningActionType
+from Class.EDAInsight import EDAInsight
+from Class.EngineeringAction import EngineeringAction, EncodingType, BinningType
 from Subgraph.cleaning import cleaning
 from Subgraph.eda import eda 
 from Subgraph.feature import feature_engineering
@@ -74,8 +74,7 @@ def get_valid_columns(state: AgentState) -> list:
             pass
     return []
 
-def check_identity(year, data: dict) -> Optional[dict]:
-    """Kiểm tra đẳng thức kế toán: Tài sản = Nợ phải trả + Vốn CSH."""
+def check_identity(year, data: dict, symbol: str) -> Optional[dict]:
     assets = data.get("tong_tai_san", 0.0)
     liabilities = data.get("no_phai_tra", 0.0)
     equity = data.get("von_chu_so_huu", 0.0)
@@ -85,10 +84,11 @@ def check_identity(year, data: dict) -> Optional[dict]:
         if diff > 1e-2:
             return {
                 "year": year,
+                "symbol": symbol,
                 "flag_type": "identity_violation",
                 "field": "tong_tai_san",
                 "message": (
-                    f"Sai lệch bảng cân đối năm {year}: "
+                    f"Sai lệch bảng cân đối năm {year} của {symbol}: "
                     f"Tài sản ({assets:.2f}) != Nợ PT + Vốn CSH ({liabilities + equity:.2f})"
                 ),
                 "severity": "HIGH",
@@ -167,12 +167,21 @@ def validator_node(state: AgentState) -> dict:
                 "validation_error": f"LLM reported {action.rows_affected} but system computed {computed.get('rows_affected', 0)} rows affected for {action.column}."
             }
 
-    # ── Kiểm tra đẳng thức kế toán (Tài sản = Nợ PT + Vốn CSH) ────────────
-    harmonized = state.get("harmonized_dataset", {})
+    harmonized = state.get("harmonized_dataset", [])
     acct_flags = list(state.get("validation_flags") or [])
-    if harmonized:
-        for year, data in harmonized.items():
-            flag = check_identity(year, data)
+    if harmonized and isinstance(harmonized, list):
+        from collections import defaultdict
+        grouped = defaultdict(dict)
+        for row in harmonized:
+            sym = row.get("symbol")
+            yr = row.get("year")
+            key = row.get("line_item_canonical")
+            val = row.get("value", 0.0)
+            if sym and yr and key:
+                grouped[(sym, yr)][key] = val
+                
+        for (sym, yr), data in grouped.items():
+            flag = check_identity(yr, data, sym)
             if flag:
                 acct_flags.append(flag)
 

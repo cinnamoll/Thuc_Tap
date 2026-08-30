@@ -4,7 +4,7 @@ import pdfplumber
 
 from Class.FinancialState import FinancialReportState
 from Class.FinancialNotes import FinancialNotesExtractor
-from Class.FinancialTable import FinancialTableExtractor
+from Class.DataDrivenTableExtractor import DataDrivenTableExtractor
 
 from Class.ReportContent.BalanceSheet import BalanceSheet, BalanceSheetLine
 from Class.ReportContent.CashFlowStatement import CashFlowStatement, CashFlowLine
@@ -43,24 +43,25 @@ def serialize_tables(obj):
         return {k: serialize_tables(v) for k, v in obj.items()}
     return obj
 
-def iter_table_rows(tables):
+def figures_from_tables(tables, code_map: dict) -> dict:
     if tables is None:
         return
-    if hasattr(tables, "to_dict") and hasattr(tables, "columns"):
-        for rec in tables.to_dict(orient="records"):
-            yield rec
-        return
-    if isinstance(tables, list):
-        for rec in tables:
-            if isinstance(rec, dict):
-                yield rec
-        return
-    if isinstance(tables, dict):
-        for value in tables.values():
-            yield from iter_table_rows(value)
-
-def figures_from_tables(tables, code_map: dict) -> dict:
-    rows = list(iter_table_rows(tables))
+    
+    rows = []
+    stack = [tables]
+    while stack:
+        current = stack.pop()
+        if current is None:
+            continue
+        if hasattr(current, "to_dict") and hasattr(current, "columns"):
+            rows.extend(current.to_dict(orient="records"))
+        elif isinstance(current, list):
+            for item in current:
+                if isinstance(item, dict):
+                    rows.append(item)
+        elif isinstance(current, dict):
+            stack.extend(current.values())
+    
     data = {}
     for field, codes in code_map.items():
         for row in rows:
@@ -79,11 +80,11 @@ def figures_from_tables(tables, code_map: dict) -> dict:
 def extract_financial_figures(text: str) -> dict:
     data = {}
     KEYWORD_MAP = {
-        "doanh_thu": [r"doanh\s*thu(?:\s*thu[aầ]n)?", r"net\s*revenue", r"total\s*revenue", r"sales"],
-        "loi_nhuan_sau_thue": [r"l[oợ]i\s*nhu[aậ]n\s*sau\s*thu[eế]", r"net\s*(?:income|profit)", r"profit\s*after\s*tax"],
-        "tong_tai_san": [r"t[oổ]ng\s*t[aà]i\s*s[aả]n", r"total\s*assets"],
-        "von_chu_so_huu": [r"v[oố]n\s*ch[uủ]\s*s[oở]\s*h[uữ]u", r"(?:owner'?s?\s*)?equity", r"vcsh"],
-        "no_phai_tra": [r"n[oợ]\s*ph[aả]i\s*tr[aả]", r"total\s*liabilities", r"liabilities"],
+        "doanh_thu": [r"net\s*revenue", r"total\s*revenue", r"sales"],
+        "loi_nhuan_sau_thue": [r"net\s*(?:income|profit)", r"profit\s*after\s*tax"],
+        "tong_tai_san": [r"total\s*assets"],
+        "von_chu_so_huu": [r"(?:owner'?s?\s*)?equity"],
+        "no_phai_tra": [r"total\s*liabilities", r"liabilities"],
     }
     
     for field, patterns in KEYWORD_MAP.items():
@@ -107,10 +108,10 @@ def extract_financial_figures(text: str) -> dict:
 def parse_contents(toc_text: str, total_pages: int) -> dict:
     found = {} 
     CONTENTS_ENTRY_PATTERNS = [
-        ("BS", re.compile(r"(?:Bảng\s+cân\s+đối\s+kế\s+toán|Balance\s+Sheet)[.\s…\-─_]*(\d+)", re.IGNORECASE)),
-        ("PL", re.compile(r"(?:Báo\s+cáo\s+kết\s+quả\s+hoạt\s+động|Income\s+Statement|Kết\s+quả\s+hoạt\s+động\s+kinh\s+doanh)[.\s…\-─_]*(\d+)", re.IGNORECASE)),
-        ("CF", re.compile(r"(?:Báo\s+cáo\s+lưu\s+chuyển\s+tiền\s+tệ|Cash\s+Flow|Lưu\s+chuyển\s+tiền\s+tệ)[.\s…\-─_]*(\d+)", re.IGNORECASE)),
-        ("NOTES", re.compile(r"(?:Bản\s+thuyết\s+minh|Thuyết\s+minh\s+báo\s+cáo|Notes\s+to)[.\s…\-─_]*(\d+)", re.IGNORECASE)),
+        ("BS", re.compile(r"(?:Balance\s+Sheet)[.\s…\-─_]*(\d+)", re.IGNORECASE)),
+        ("PL", re.compile(r"(?:Income\s+Statement)[.\s…\-─_]*(\d+)", re.IGNORECASE)),
+        ("CF", re.compile(r"(?:Cash\s+Flow)[.\s…\-─_]*(\d+)", re.IGNORECASE)),
+        ("NOTES", re.compile(r"(?:Notes\s+to)[.\s…\-─_]*(\d+)", re.IGNORECASE)),
     ]
     for key, pattern in CONTENTS_ENTRY_PATTERNS:
         match = pattern.search(toc_text)
@@ -138,10 +139,10 @@ def parse_contents(toc_text: str, total_pages: int) -> dict:
 def assign_page_ranges_by_markers(page_texts: list) -> dict:
     found = []  
     STATEMENT_MARKERS = [
-        ("BS", re.compile(r"(?:BẢNG\s+CÂN\s+ĐỐI\s+KẾ\s+TOÁN|CONSOLIDATED\s+BALANCE\s+SHEET|BALANCE\s+SHEET)", re.IGNORECASE)),
-        ("PL", re.compile(r"(?:BÁO\s+CÁO\s+KẾT\s+QUẢ\s+HOẠT\s+ĐỘNG|INCOME\s+STATEMENT|STATEMENT\s+OF\s+(?:COMPREHENSIVE\s+)?INCOME)", re.IGNORECASE)),
-        ("CF", re.compile(r"(?:BÁO\s+CÁO\s+LƯU\s+CHUYỂN\s+TIỀN\s+TỆ|CASH\s+FLOWS?\s+STATEMENT|STATEMENT\s+OF\s+CASH\s+FLOWS)", re.IGNORECASE)),
-        ("NOTES", re.compile(r"(?:BẢN\s+THUYẾT\s+MINH|THUYẾT\s+MINH\s+BÁO\s+CÁO|NOTES\s+TO\s+THE\s+(?:CONSOLIDATED\s+)?FINANCIAL\s+STATEMENTS)", re.IGNORECASE)),
+        ("BS", re.compile(r"(?:CONSOLIDATED\s+BALANCE\s+SHEET|BALANCE\s+SHEET)", re.IGNORECASE)),
+        ("PL", re.compile(r"(?:INCOME\s+STATEMENT|STATEMENT\s+OF\s+(?:COMPREHENSIVE\s+)?INCOME)", re.IGNORECASE)),
+        ("CF", re.compile(r"(?:CASH\s+FLOWS?\s+STATEMENT|STATEMENT\s+OF\s+CASH\s+FLOWS)", re.IGNORECASE)),
+        ("NOTES", re.compile(r"(?:NOTES\s+TO\s+THE\s+(?:CONSOLIDATED\s+)?FINANCIAL\s+STATEMENTS)", re.IGNORECASE)),
     ]
 
     for i, text in enumerate(page_texts):
@@ -166,63 +167,98 @@ def assign_page_ranges_by_markers(page_texts: list) -> dict:
  
     return ranges
 
-def extract_balance_sheet_pages(text: str, page_start: int, page_end: int, year: int) -> BalanceSheet:
-    raw_bs = FinancialTableExtractor().extract_balance_sheet(text)
+def extract_balance_sheet_pages(file_path: str, page_start: int, page_end: int, year: int) -> BalanceSheet:
+    raw_bs = DataDrivenTableExtractor().extract_table(file_path, page_start, page_end, "BS")
  
     bs = BalanceSheet(page_start=page_start, page_end=page_end, year=year)
-    bs.raw_data = serialize_tables(raw_bs)
+    bs.raw_data = raw_bs
  
     BS_CODE = {"tong_tai_san": ["270"], "no_phai_tra": ["300", "330"], "von_chu_so_huu": ["400", "410"]}
 
-    figures = figures_from_tables(raw_bs, BS_CODE)
-    bs.tong_tai_san = parse_number(figures.get("tong_tai_san"))
-    bs.no_phai_tra = parse_number(figures.get("no_phai_tra"))
-    bs.von_chu_so_huu = parse_number(figures.get("von_chu_so_huu"))
+    # Tinh toan figure tu list dict
+    data = {}
+    for field, codes in BS_CODE.items():
+        for row in raw_bs:
+            code = str(row.get("Mã số", "")).strip()
+            if code not in codes:
+                continue
+            for col in ["Số cuối kỳ", "Kỳ này", "Lũy kế kỳ này"]:
+                if row.get(col) is not None:
+                    data[field] = row[col]
+                    break
+            if field in data:
+                break
+
+    bs.tong_tai_san = data.get("tong_tai_san")
+    bs.no_phai_tra = data.get("no_phai_tra")
+    bs.von_chu_so_huu = data.get("von_chu_so_huu")
  
     sections = {}
-    for part_key, part_data in raw_bs.items():
-        lines = []
-        for sub_key, sub_df in part_data.items():
-            for rec in serialize_tables(sub_df):
-                if isinstance(rec, dict) and rec.get("Chỉ tiêu"):
-                    lines.append(BalanceSheetLine(
-                        prefix=rec.get("Prefix"),
-                        chi_tieu=rec.get("Chỉ tiêu", ""),
-                        ma_so=rec.get("Mã số"),
-                        so_cuoi_ky=parse_number(rec.get("Số cuối kỳ")),
-                        so_dau_nam=parse_number(rec.get("Số đầu năm")),
-                    ))
-        if lines:
-            sections[part_key] = lines
+    current_part = None
+    lines = []
+    
+    for rec in raw_bs:
+        prefix = rec.get("Prefix")
+        if prefix in ["A", "B", "C", "D", "E"]:
+            if current_part and lines:
+                sections[current_part] = lines
+            current_part = prefix
+            lines = []
+        if rec.get("Chỉ tiêu"):
+            lines.append(BalanceSheetLine(
+                prefix=prefix,
+                chi_tieu=rec.get("Chỉ tiêu", ""),
+                ma_so=rec.get("Mã số"),
+                so_cuoi_ky=rec.get("Số cuối kỳ"),
+                so_dau_nam=rec.get("Số đầu năm"),
+            ))
+            
+    if current_part and lines:
+        sections[current_part] = lines
+    elif lines: # fallback neu khong co part
+        sections["ALL"] = lines
+        
     bs.sections = sections
  
     return bs
 
-def extract_income_statement_pages(text: str, page_start: int, page_end: int, year: int) -> IncomeStatement:
-    raw_pl = FinancialTableExtractor().extract_income_statement(text)
+def extract_income_statement_pages(file_path: str, page_start: int, page_end: int, year: int, full_text: str) -> IncomeStatement:
+    raw_pl = DataDrivenTableExtractor().extract_table(file_path, page_start, page_end, "PL")
  
     pl = IncomeStatement(page_start=page_start, page_end=page_end, year=year)
-    pl.raw_data = serialize_tables(raw_pl)
+    pl.raw_data = raw_pl
  
     line_items = []
-    for rec in serialize_tables(raw_pl):
-        if isinstance(rec, dict) and rec.get("Chỉ tiêu"):
+    for rec in raw_pl:
+        if rec.get("Chỉ tiêu"):
             line_items.append(IncomeStatementLine(
-                stt=rec.get("STT"),
+                stt=rec.get("Prefix"),
                 chi_tieu=rec.get("Chỉ tiêu", ""),
                 ma_so=rec.get("Mã số"),
-                ky_nay=parse_number(rec.get("Kỳ này")),
-                ky_truoc=parse_number(rec.get("Kỳ trước")),
+                ky_nay=rec.get("Kỳ này"),
+                ky_truoc=rec.get("Kỳ trước"),
             ))
     pl.line_items = line_items
  
     PL_CODE = {"doanh_thu": ["01", "10"], "loi_nhuan_sau_thue": ["60", "62"]}
  
-    figures = figures_from_tables(raw_pl, PL_CODE)
-    pl.doanh_thu = figures.get("doanh_thu")
-    pl.loi_nhuan_sau_thue = figures.get("loi_nhuan_sau_thue")
+    data = {}
+    for field, codes in PL_CODE.items():
+        for row in raw_pl:
+            code = str(row.get("Mã số", "")).strip()
+            if code not in codes:
+                continue
+            for col in ["Số cuối kỳ", "Kỳ này", "Lũy kế kỳ này"]:
+                if row.get(col) is not None:
+                    data[field] = row[col]
+                    break
+            if field in data:
+                break
+
+    pl.doanh_thu = data.get("doanh_thu")
+    pl.loi_nhuan_sau_thue = data.get("loi_nhuan_sau_thue")
  
-    kw = extract_financial_figures(text)
+    kw = extract_financial_figures(full_text)
     if pl.doanh_thu is None:
         pl.doanh_thu = kw.get("doanh_thu")
     if pl.loi_nhuan_sau_thue is None:
@@ -230,26 +266,38 @@ def extract_income_statement_pages(text: str, page_start: int, page_end: int, ye
  
     return pl
 
-def extract_cash_flow_pages(text: str, page_start: int, page_end: int, year: int) -> CashFlowStatement:
-    raw_cf = FinancialTableExtractor().extract_cash_flow(text)
+def extract_cash_flow_pages(file_path: str, page_start: int, page_end: int, year: int) -> CashFlowStatement:
+    raw_cf = DataDrivenTableExtractor().extract_table(file_path, page_start, page_end, "CF")
  
     cf = CashFlowStatement(page_start=page_start, page_end=page_end, year=year)
-    cf.raw_data = serialize_tables(raw_cf)
+    cf.raw_data = raw_cf
  
     sections = {}
-    for section_key, section_df in raw_cf.items():
-        lines = []
-        for rec in serialize_tables(section_df):
-            if isinstance(rec, dict) and rec.get("Chỉ tiêu"):
-                lines.append(CashFlowLine(
-                    prefix=rec.get("Prefix"),
-                    chi_tieu=rec.get("Chỉ tiêu", ""),
-                    ma_so=rec.get("Mã số"),
-                    luy_ke_ky_nay=parse_number(rec.get("Lũy kế kỳ này")),
-                    luy_ke_ky_truoc=parse_number(rec.get("Lũy kế kỳ trước")),
-                ))
-        if lines:
-            sections[section_key] = lines
+    current_section = None
+    lines = []
+    
+    for rec in raw_cf:
+        prefix = rec.get("Prefix")
+        if prefix and re.match(r'^[IVX]+$', prefix):
+            if current_section and lines:
+                sections[current_section] = lines
+            current_section = prefix
+            lines = []
+            
+        if rec.get("Chỉ tiêu"):
+            lines.append(CashFlowLine(
+                prefix=prefix,
+                chi_tieu=rec.get("Chỉ tiêu", ""),
+                ma_so=rec.get("Mã số"),
+                luy_ke_ky_nay=rec.get("Lũy kế kỳ này"),
+                luy_ke_ky_truoc=rec.get("Lũy kế kỳ trước"),
+            ))
+            
+    if current_section and lines:
+        sections[current_section] = lines
+    elif lines:
+        sections["ALL"] = lines
+        
     cf.sections = sections
  
     return cf
@@ -315,10 +363,7 @@ def extraction_worker_node(state: FinancialReportState) -> dict:
         page_texts = [p.extract_text() or "" for p in reader.pages]
 
         contents_idx = None
-        CONTENTS_PATTERN = re.compile(
-            r"(?:MỤC\s+LỤC|TABLE\s+OF\s+CONTENTS|NỘI\s+DUNG|CONTENTS)",
-            re.IGNORECASE,
-        )
+        CONTENTS_PATTERN = re.compile(r"(?:TABLE\s+OF\s+CONTENTS|CONTENTS)", re.IGNORECASE)
         for i in range(min(10, total_pages)):
             if CONTENTS_PATTERN.search(page_texts[i]):
                 contents_idx = i
@@ -347,21 +392,19 @@ def extraction_worker_node(state: FinancialReportState) -> dict:
 
         if "BS" in page_ranges:
             ps, pe = page_ranges["BS"]
-            bs_text = "\n".join(page_texts[ps : min(pe + 1, total_pages)])
-            bs_obj = extract_balance_sheet_pages(bs_text, ps, pe, year)
+            bs_obj = extract_balance_sheet_pages(file_path, ps, pe, year)
             state['balance_data'].append(bs_obj)
 
         if "PL" in page_ranges:
             ps, pe = page_ranges["PL"]
-            pl_text = "\n".join(page_texts[ps : min(pe + 1, total_pages)])
-            pl_obj = extract_income_statement_pages(pl_text, ps, pe, year)
-            state['income_data'].append(bs_obj)
+            full_text = "\n".join(page_texts)
+            pl_obj = extract_income_statement_pages(file_path, ps, pe, year, full_text)
+            state['income_data'].append(pl_obj)
 
         if "CF" in page_ranges:
             ps, pe = page_ranges["CF"]
-            cf_text = "\n".join(page_texts[ps : min(pe + 1, total_pages)])
-            cf_obj = extract_cash_flow_pages(cf_text, ps, pe, year)
-            state['cash_data'].append(bs_obj)
+            cf_obj = extract_cash_flow_pages(file_path, ps, pe, year)
+            state['cash_data'].append(cf_obj)
             
         if "NOTES" in page_ranges:
             ps, pe = page_ranges["NOTES"]

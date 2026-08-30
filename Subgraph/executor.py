@@ -5,9 +5,9 @@ import numpy as np
 from langgraph.types import interrupt
 
 from Class.AgentState import AgentState
-from Class.SupervisorAction.CleaningAction import CleaningAction, CleaningActionType
-from Class.SupervisorAction.EDAInsight import EDAInsight
-from Class.SupervisorAction.EngineeringAction import EngineeringAction, EncodingType, BinningType
+from Class.CleaningAction import CleaningAction, CleaningActionType
+from Class.EDAInsight import EDAInsight
+from Class.EngineeringAction import EngineeringAction, EncodingType, BinningType
 
 def read_df(file_path: str, file_format: str) -> pd.DataFrame:
     if file_format == "csv":

@@ -3,9 +3,9 @@ from langchain_core.messages import BaseMessage
 from operator import add as add_messages
 import operator
 
-from Class.SupervisorAction.CleaningAction import CleaningAction
-from Class.SupervisorAction.EDAInsight import EDAInsight
-from Class.SupervisorAction.EngineeringAction import EngineeringAction
+from Class.CleaningAction import CleaningAction
+from Class.EDAInsight import EDAInsight
+from Class.EngineeringAction import EngineeringAction
 from Class.Report import Report
 
 def dedupe_list(left: Optional[List[str]], right: Optional[List[str]]) -> List[str]:

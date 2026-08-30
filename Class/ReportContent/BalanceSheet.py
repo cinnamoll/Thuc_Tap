@@ -25,8 +25,7 @@ class BalanceSheet(BaseModel):
 
     raw_data: Optional[Dict[str, Any]] = None
 
-    @field_validator("tong_tai_san", "no_phai_tra", "von_chu_so_huu",
-                     "tai_san_ngan_han", "tai_san_dai_han", mode="before")
+    @field_validator("tong_tai_san", "no_phai_tra", "von_chu_so_huu", "tai_san_ngan_han", "tai_san_dai_han", mode="before")
     @classmethod
     def parse_aggregate(cls, value):
         if value is None or value == "" or value == "-":

@@ -6,11 +6,10 @@ from langchain_deepseek import ChatDeepSeek
 from langgraph.prebuilt import ToolNode
 from langchain_core.tools import tool, InjectedToolCallId
 import pandas as pd
-import numpy as np
 from langgraph.types import Command
 
 from Class.AgentState import AgentState
-from Class.SupervisorAction.EngineeringAction import EngineeringAction, EncodingType, BinningType
+from Class.EngineeringAction import EngineeringAction, EncodingType, BinningType
 
 load_dotenv()
 
@@ -155,7 +154,7 @@ def feature_agent_node(state: AgentState):
 def propose_action_node(state: AgentState) -> AgentState:
     messages = state['messages']
     existing_actions = state.get('pending_engineering', [])
-    covered_cols = [[a.column, a.actionType] for a in existing_actions]
+    covered_actions = [(a.column, a.line_item_canonical, a.actionType) for a in existing_actions]
     file_path = state.get('file_path', '')
     file_format = state.get('file_format', 'csv')
     dataset_profile = state.get('dataset_profile', {})
@@ -176,11 +175,16 @@ def propose_action_node(state: AgentState) -> AgentState:
         call the standardization or binning tool for numerical columns and preview the column(s) head 
         after transformation.
         3. Look at the actions already covered in 'Already proposed actions' below — do NOT propose 
-        an action for a (column, actionType) pair that already has one, unless explicitly asked to redo it.
+        an action for a target that already has one, unless explicitly asked to redo it.
         4. Pick exactly ONE remaining column/transformation with the most impactful unresolved issue 
         and propose a single EngineeringAction for it.
         5. If every column has already been adequately transformed, or there is nothing further worth 
         proposing, return a JSON object with "actionType": "none" to signal completion.
+        
+        IMPORTANT RULES FOR FINANCIAL DATA (Long-format):
+        - DO NOT propose standard financial ratios (e.g. ROE, ROA, Debt-to-Equity). These are handled by a dedicated `ratio_trend_engine`.
+        - DO NOT propose one-hot encoding for `line_item_canonical` or other metadata columns in the long-format data.
+        - You SHOULD propose actions like 'binning' continuous variables according to industry thresholds, or calculating simple temporal variables (e.g. raw YoY growth).
         
         Valid actionType values: "label_encoding", "ordinal_encoding", "frequency_encoding", "one_hot_encoding", "equal_width", "quantile", "standardize", "none"
         """
@@ -190,9 +194,9 @@ def propose_action_node(state: AgentState) -> AgentState:
         [system_prompt] + 
         [HumanMessage(content=f"Valid dataset columns: {valid_cols}")] + 
         messages + [HumanMessage(content=
-            f"""Already proposed actions (column, actionType): {covered_cols}
+            f"""Already proposed actions (column, line_item_canonical, actionType): {covered_actions}
             Summarize as JSON matching schema for ONE action only:
-            {{"file_path": "{file_path}", "file_format": "{file_format}", "reason": str, "column": str, "rows_affected": int | null, "rows_ratio": float | null,
+            {{"file_path": "{file_path}", "file_format": "{file_format}", "reason": str, "column": str, "line_item_canonical": str|null, "rows_affected": int | null, "rows_ratio": float | null,
                 "risk_level": "low" | "medium" | "high" | null, "actionType": "label_encoding"|"ordinal_encoding"|"frequency_encoding"|"one_hot_encoding"|"equal_width"|"quantile"|"standardize"|"none", "n_bin": int}}\n
             Preview the column for user using {state.get('preview_feature', '')}
             """
@@ -203,7 +207,7 @@ def propose_action_node(state: AgentState) -> AgentState:
     if not res.file_format:
         res.file_format = file_format
 
-    summary = "\n".join(f"- {a.column}: {a.actionType}" for a in existing_actions)
+    summary = "\n".join(f"- {a.column} ({a.line_item_canonical}): {a.actionType}" for a in existing_actions)
     if res.actionType in (EncodingType.NONE, BinningType.NONE): 
         return Command(update={"engineer_done": True})
 

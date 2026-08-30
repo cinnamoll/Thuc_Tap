@@ -12,7 +12,7 @@ from langgraph.types import Command
 import matplotlib
 
 from Class.AgentState import AgentState
-from Class.SupervisorAction.EDAInsight import EDAInsight
+from Class.EDAInsight import EDAInsight
 
 matplotlib.use('Agg') 
 load_dotenv()
@@ -31,7 +31,7 @@ def read_df(file_path: str, file_format: str) -> pd.DataFrame:
     return df
 
 @tool
-def univariate_analyst_numeric(file_path: str, file_format: str, column: str, tool_call_id: Annotated[str, InjectedToolCallId]) -> str:
+def univariate_analyst_numeric(file_path: str, file_format: str, column: str, group_by: str, tool_call_id: Annotated[str, InjectedToolCallId]) -> str:
     """
     Apply this tool only to numeric data columns to extract statistical analysis containing:
         - Measures central tendency (mean, median) to find the typical value.
@@ -41,6 +41,7 @@ def univariate_analyst_numeric(file_path: str, file_format: str, column: str, to
     Args:
         file_path (str): path to the dataset file
         column (str): name of the numeric column to analyze
+        group_by (str): name of the column to group by before analysis (e.g., 'line_item_canonical' or 'symbol'). Use an empty string '' if no grouping is needed.
 
     Returns:
         Update the univariate field in AgentState with the dictionary containing value required
@@ -53,58 +54,118 @@ def univariate_analyst_numeric(file_path: str, file_format: str, column: str, to
     if not pd.api.types.is_numeric_dtype(df[column]):
         return f"'{column}' is not numeric (dtype={df[column].dtype}). Use a categorical analysis tool instead."
 
-    series = df[column]
-    mean_val = series.mean()
-    median_val = series.median()
-    min_val = series.min()
-    max_val = series.max()
-    var_val = series.var()
-    std_val = series.std()
-    skew_val = series.skew()
-    q1 = series.quantile(0.25)
-    q3 = series.quantile(0.75)
-    null_count = int(series.isnull().sum())
-    count_val = int(series.count())
+    if group_by and group_by in df.columns:
+        res_list = []
+        for name, group in df.groupby(group_by):
+            series = group[column]
+            if series.count() == 0:
+                continue
+            mean_val = series.mean()
+            median_val = series.median()
+            min_val = series.min()
+            max_val = series.max()
+            var_val = series.var()
+            std_val = series.std()
+            skew_val = series.skew()
+            q1 = series.quantile(0.25)
+            q3 = series.quantile(0.75)
+            null_count = int(series.isnull().sum())
+            count_val = int(series.count())
 
-    iqr = q3 - q1
-    lower_bound = q1 - 1.5 * iqr
-    upper_bound = q3 + 1.5 * iqr
+            iqr = q3 - q1
+            lower_bound = q1 - 1.5 * iqr
+            upper_bound = q3 + 1.5 * iqr
 
-    outlier_count = int(((series < lower_bound) | (series > upper_bound)).sum())
+            outlier_count = int(((series < lower_bound) | (series > upper_bound)).sum())
 
-    if skew_val is None or pd.isna(skew_val):
-        skew_desc = "Unidentified"
-    elif abs(skew_val) < 0.5:
-        skew_desc = "approximately symmetric"
-    elif skew_val > 0.5:
-        skew_desc = "right-skewed"
+            if skew_val is None or pd.isna(skew_val):
+                skew_desc = "Unidentified"
+            elif abs(skew_val) < 0.5:
+                skew_desc = "approximately symmetric"
+            elif skew_val > 0.5:
+                skew_desc = "right-skewed"
+            else:
+                skew_desc = "left-skewed / negative skew"
+
+            range_val = max_val - min_val
+            
+            res = {
+                "group": str(name),
+                "column": column,
+                "valid_values": count_val,
+                "null_values": null_count,
+                "mean": round(float(mean_val), 4),
+                "median": round(float(median_val), 4),
+                "range": round(float(range_val), 4),
+                "min": round(float(min_val), 4),
+                "max": round(float(max_val), 4),
+                "variance": round(float(var_val) if not pd.isna(var_val) else 0.0, 4),
+                "std_dev": round(float(std_val) if not pd.isna(std_val) else 0.0, 4),
+                "iqr": round(float(iqr), 4),
+                "q1": round(float(q1), 4),
+                "q3": round(float(q3), 4),
+                "skewness": round(float(skew_val) if not pd.isna(skew_val) else 0.0, 4),
+                "skewness_description": skew_desc,
+                "outliers_count": outlier_count,
+                "lower_bound": round(float(lower_bound), 4),
+                "upper_bound": round(float(upper_bound), 4)
+            }
+            res_list.append(res)
+        
+        return Command(update={"univariate": res_list, "messages": [ToolMessage(content=str(res_list), tool_call_id=tool_call_id)]})
     else:
-        skew_desc = "left-skewed / negative skew"
+        series = df[column]
+        mean_val = series.mean()
+        median_val = series.median()
+        min_val = series.min()
+        max_val = series.max()
+        var_val = series.var()
+        std_val = series.std()
+        skew_val = series.skew()
+        q1 = series.quantile(0.25)
+        q3 = series.quantile(0.75)
+        null_count = int(series.isnull().sum())
+        count_val = int(series.count())
 
-    range_val = max_val - min_val
-    
-    res = {
-        "column": column,
-        "valid_values": count_val,
-        "null_values": null_count,
-        "mean": round(float(mean_val), 4),
-        "median": round(float(median_val), 4),
-        "range": round(float(range_val), 4),
-        "min": round(float(min_val), 4),
-        "max": round(float(max_val), 4),
-        "variance": round(float(var_val), 4),
-        "std_dev": round(float(std_val), 4),
-        "iqr": round(float(iqr), 4),
-        "q1": round(float(q1), 4),
-        "q3": round(float(q3), 4),
-        "skewness": round(float(skew_val), 4),
-        "skewness_description": skew_desc,
-        "outliers_count": outlier_count,
-        "lower_bound": round(float(lower_bound), 4),
-        "upper_bound": round(float(upper_bound), 4)
-    }
-    
-    return Command(update={"univariate": [res], "messages": [ToolMessage(content=str(res), tool_call_id=tool_call_id)]})
+        iqr = q3 - q1
+        lower_bound = q1 - 1.5 * iqr
+        upper_bound = q3 + 1.5 * iqr
+
+        outlier_count = int(((series < lower_bound) | (series > upper_bound)).sum())
+
+        if skew_val is None or pd.isna(skew_val):
+            skew_desc = "Unidentified"
+        elif abs(skew_val) < 0.5:
+            skew_desc = "approximately symmetric"
+        elif skew_val > 0.5:
+            skew_desc = "right-skewed"
+        else:
+            skew_desc = "left-skewed / negative skew"
+
+        range_val = max_val - min_val
+        
+        res = {
+            "column": column,
+            "valid_values": count_val,
+            "null_values": null_count,
+            "mean": round(float(mean_val), 4),
+            "median": round(float(median_val), 4),
+            "range": round(float(range_val), 4),
+            "min": round(float(min_val), 4),
+            "max": round(float(max_val), 4),
+            "variance": round(float(var_val) if not pd.isna(var_val) else 0.0, 4),
+            "std_dev": round(float(std_val) if not pd.isna(std_val) else 0.0, 4),
+            "iqr": round(float(iqr), 4),
+            "q1": round(float(q1), 4),
+            "q3": round(float(q3), 4),
+            "skewness": round(float(skew_val) if not pd.isna(skew_val) else 0.0, 4),
+            "skewness_description": skew_desc,
+            "outliers_count": outlier_count,
+            "lower_bound": round(float(lower_bound), 4),
+            "upper_bound": round(float(upper_bound), 4)
+        }
+        
+        return Command(update={"univariate": [res], "messages": [ToolMessage(content=str(res), tool_call_id=tool_call_id)]})
     
 @tool
 def univariate_analyst_cat(file_path: str, file_format: str, column: str, tool_call_id: Annotated[str, InjectedToolCallId]) -> str:
@@ -258,7 +319,7 @@ def eda_agent_node(state: AgentState):
 def propose_insight_node(state: AgentState) -> AgentState:
     messages = state['messages']
     existing_actions = state.get('pending_insight', [])
-    covered_cols = [[a.column, a.metric_value] for a in existing_actions]
+    covered_cols = [[a.column, a.line_item_canonical, list(a.metric_value.keys())] for a in existing_actions]
     file_path = state.get('file_path', '')
     file_format = state.get('file_format', 'csv')
     dataset_profile = state.get('dataset_profile', {})
@@ -276,10 +337,11 @@ def propose_insight_node(state: AgentState) -> AgentState:
         Required procedure:
         1. Valid columns in dataset: {valid_cols}. You MUST select 'column' strictly from this list. Do NOT invent non-existent column names (e.g. 'id').
         2. Always call the profiling or univariate tools first to understand the dataset's schema, 
-        distributions, and basic statistics.
+        distributions, and basic statistics. 
+        IMPORTANT: If analyzing long-format financial data, you MUST use `group_by='line_item_canonical'` in `univariate_analyst_numeric` tool to get statistics per line item. Analyzing the 'value' column globally is meaningless.
         3. Look at the insights already covered in 'Already proposed insights' below — do NOT propose 
-        an insight for a (column, metric) pair that already has one, unless explicitly asked to redo it.
-        4. Pick exactly ONE remaining column/metric with the most impactful unresolved insight 
+        an insight for a (column, line_item_canonical, metric) tuple that already has one, unless explicitly asked to redo it.
+        4. Pick exactly ONE remaining column/metric (and specific line_item_canonical if applicable) with the most impactful unresolved insight 
         (central tendency, dispersion, distribution shape, correlation, etc.) and propose a single 
         EDAInsight for it, including a suggested visualization if relevant.
         5. If every meaningful insight has already been proposed, return: {{"column": "none", "metric_value": {{"NONE": 0.0}}}}
@@ -293,12 +355,12 @@ def propose_insight_node(state: AgentState) -> AgentState:
         messages + [HumanMessage(content=(
             f"""Already proposed insights: {covered_cols}\n
             Summarize as JSON matching schema for ONE column with metric_name and value appended to metric_value dict only.\n
-            {{"column":str, "metric_value":Dict[str:float]}}
+            {{"column":str, "line_item_canonical":str|null, "metric_value":Dict[str:float]}}
             """
         ))]
     )
 
-    summary = "\n".join(f"- {a.column}: {list(a.metric_value.keys())}" for a in existing_actions) 
+    summary = "\n".join(f"- {a.column} ({a.line_item_canonical}): {list(a.metric_value.keys())}" for a in existing_actions) 
     if list(res.metric_value.keys()) == ["NONE"]:
         return Command(update={"eda_done": True})
 
