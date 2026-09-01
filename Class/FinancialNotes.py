@@ -1,4 +1,10 @@
 import re
+import pdfplumber
+import pytesseract
+from pdf2image import convert_from_path
+
+from Class.TableExtractor import TableExtractor, Word
+from Class.ReportContent.FinancialNotesReport import FinancialNotesReport
 
 class FinancialNotesExtractor:
     sections_regex = {
@@ -112,14 +118,14 @@ class FinancialNotesExtractor:
 
     def slice_sub_section(self, section_text, regex):
         if not section_text:
-            return "Không phát sinh số dư hoặc không được thuyết minh chi tiết / No outstanding balance or not disclosed."
+            return "Không phát sinh số dư hoặc không được Notes chi tiết / No outstanding balance or not disclosed."
         match = regex.search(section_text)
         return match.group(0).strip() if match else "Không có thông tin chi tiết / Information not available."
 
     def extract_all_to_format(self, full_text):
         if not full_text:
             return ""
-        
+
         cleaned_text = re.sub(r'[ \t]+', ' ', full_text)
         cleaned_text = re.sub(r'\r\n', '\n', full_text)
 
@@ -132,9 +138,9 @@ class FinancialNotesExtractor:
         sec_bo_sung_cashflow = self.slice_section(cleaned_text, self.sections_regex["bo_sung_luu_chuyen_tien_te"])
         sec_thong_tin_khac = self.slice_section(cleaned_text, self.sections_regex["nhung_thong_tin_khac"])
 
-        has_non_going_concern = "không đáp ứng giả định hoạt động liên tục" in sec_chinh_sach_ke_toan.lower() or "not a going concern" in sec_chinh_sach_ke_toan.lower()
+        has_non_going_concern = "not a going concern" in sec_chinh_sach_ke_toan.lower()
         if has_non_going_concern:
-            policy_lien_tuc = re.sub(r'(?i)không\s+đáp\s+ứng\s+giả\s+định[\s\S]+', '', sec_chinh_sach_ke_toan)
+            policy_lien_tuc = re.sub(r'(?i)not\s+a\s+going\s+concern[\s\S]+', '', sec_chinh_sach_ke_toan)
             policy_khong_lien_tuc = sec_chinh_sach_ke_toan[len(policy_lien_tuc):]
         else:
             policy_lien_tuc = sec_chinh_sach_ke_toan if sec_chinh_sach_ke_toan else "Không có thông tin / Not available."
@@ -197,3 +203,261 @@ class FinancialNotesExtractor:
         ]
 
         return formatted_output
+    
+    SECTION_NO = re.compile(r"^(\d{1,2}(?:\.\d+)?)\s+(.+)$")
+    NUMBER_FORMAT = re.compile(r"^\d{1,2}(\.\d+)?$")
+    @staticmethod
+    def build_notes_row(cleaned:dict) -> dict:
+        row = {
+            "Prefix": cleaned.get("prefix") or "",
+            "Items": cleaned.get("chi_tieu", ""),
+            "Code": cleaned.get("ma_so", ""),
+            "Notes": cleaned.get("notes", "")
+        }
+        reserved = {"prefix", "chi_tieu", "ma_so", "notes"}
+        for k, v in cleaned.items():
+            if k not in reserved:
+                row[k] = v
+        return row
+    
+    @staticmethod
+    def extract_tables_from_pages(file_path: str, page_start: int, page_end: int, dpi: int = 400) -> dict[str, list[dict]]:
+        te = TableExtractor()
+        te.dpi = dpi
+        result: dict[str, list[dict]] = {}
+
+        with pdfplumber.open(file_path) as pdf:
+            imgs = convert_from_path(file_path, dpi=dpi, first_page=page_start + 1, last_page=min(page_end + 1, len(pdf.pages)))
+            for idx, page_num in enumerate(range(page_start, page_end + 1)):
+                if idx >= len(imgs):
+                    break
+                page = pdf.pages[page_num]
+                w_pt, h_pt = float(page.width), float(page.height)
+
+                ocr_data = pytesseract.image_to_data(
+                    imgs[idx], output_type=pytesseract.Output.DICT,
+                )
+                img_w, img_h = imgs[idx].size
+                sx, sy = w_pt / img_w, h_pt / img_h
+
+                tagged_words: list[tuple[Word, tuple]] = []
+                for j in range(len(ocr_data["text"])):
+                    text = ocr_data["text"][j].strip()
+                    conf = (int(ocr_data["conf"][j]) if ocr_data["conf"][j] not in ("-1", "") else -1)
+                    if not text or conf < 10:
+                        continue
+                    x = ocr_data["left"][j] * sx
+                    y = ocr_data["top"][j] * sy
+                    w_px = ocr_data["width"][j] * sx
+                    h_px = ocr_data["height"][j] * sy
+                    line_key = (
+                        ocr_data["block_num"][j],
+                        ocr_data["par_num"][j],
+                        ocr_data["line_num"][j],
+                    )
+                    tagged_words.append(
+                        (Word(text, x, x + w_px, y, y + h_px), line_key)
+                    )
+
+                if not tagged_words:
+                    continue
+
+                words = [tw[0] for tw in tagged_words]
+                ocr_lines = te.group_into_lines_ocr(tagged_words)
+
+                has_any_fin = any(
+                    te.is_financial_number(w.text) for w in words
+                )
+                if not has_any_fin:
+                    continue
+
+                segments: list[tuple[str, list[list[Word]]]] = []
+                current_heading = ""
+                current_table_lines: list[list[Word]] = []
+
+                for line in ocr_lines:
+                    line_text = " ".join(w.text for w in line).strip()
+                    has_fin = any(te.is_financial_number(w.text) for w in line)
+
+                    if has_fin:
+                        current_table_lines.append(line)
+                    else:
+                        if line_text:
+                            m_num = FinancialNotesExtractor.SECTION_NO.match(line_text)
+                            is_num_format = FinancialNotesExtractor.NUMBER_FORMAT.match(line_text)
+                            is_heading_part = current_heading and FinancialNotesExtractor.NUMBER_FORMAT.match(current_heading)
+                            
+                            if m_num or is_num_format or is_heading_part:
+                                if current_table_lines:
+                                    segments.append((current_heading, current_table_lines))
+                                    current_table_lines = []
+                                
+                                if m_num or is_num_format:
+                                    current_heading = line_text
+                                else:
+                                    current_heading = current_heading + " " + line_text if current_heading else line_text
+                            else:
+                                if current_table_lines:
+                                    current_table_lines.append(line)
+                                else:
+                                    current_heading = (current_heading + " " + line_text).strip() if current_heading else line_text
+
+                if current_table_lines:
+                    segments.append((current_heading, current_table_lines))
+                for heading, table_lines in segments:
+                    if not table_lines:
+                        continue
+                    rows = te.words_to_rows_with_lines(
+                        table_lines, words, w_pt,
+                    )
+                    extracted = []
+                    for r in rows:
+                        c = te.clean_row(r)
+                        if not c.get("chi_tieu"):
+                            continue
+                        extracted.append(FinancialNotesExtractor.build_notes_row(c))
+                    if not extracted:
+                        continue
+                    key = heading if heading else f"Untitled_p{page_num}"
+                    if key in result:
+                        result[key].extend(extracted)
+                    else:
+                        result[key] = extracted
+
+        return result
+
+    NOTES_COL_MAPS: dict = {
+        "movement": {
+            "period_current": "beginning_balance",
+            "period_prior": "increase",
+            "accum_current": "decrease",
+            "accum_prior": "ending_balance",
+        },
+        "comparison": {
+            "period_current": "current_year",
+            "period_prior": "prior_year",
+        },
+        "loan": {
+            "period_current": "outstanding_balance",
+            "period_prior": "interest_rate",
+            "accum_current": "maturity",
+            "accum_prior": "collateral",
+        },
+    }
+
+    HEADING_TO_COL_MAP: list[tuple[list[str], str]] = [
+        (["fixed asset", "tangible", "intangible", "depreciation", "provision", "movement", "roll"], "movement"),
+        (["loan", "borrowing", "finance lease", "debt"], "loan"),
+        ([], "comparison")
+    ]
+
+    @classmethod
+    def rename_notes_columns(cls, rows: list[dict], heading: str) -> list[dict]:
+        def detect_col_map_type(heading: str) -> str:
+            h = heading.lower()
+            for keywords, map_type in cls.HEADING_TO_COL_MAP:
+                if not keywords:   
+                    return map_type
+                if any(kw in h for kw in keywords):
+                    return map_type
+            return "comparison"
+        
+        map_type = detect_col_map_type(heading)
+        col_map = cls.NOTES_COL_MAPS[map_type]
+        renamed = []
+        for row in rows:
+            new_row = {}
+            for k, v in row.items():
+                if k in col_map:
+                    new_name = col_map[k]
+                    if new_name is None: 
+                        continue
+                    new_row[new_name] = v
+                else:
+                    new_row[k] = v
+            renamed.append(new_row)
+        return renamed
+
+    HEADING_TO_SECTION: list[tuple[list[str], str]] = [
+        (["cash", "receivable", "inventory", "inventories","tangible", "intangible", "fixed asset", "investment",
+          "payable", "loan", "borrowing", "finance lease","provision", "equity", "prepaid"], "bo_sung_bang_can_doi"),
+        (["revenue", "income", "expense", "cost of", "profit", "selling", "administrative", "financial income","financial expense"], "bo_sung_ket_qua_kd"),
+        (["cash flow", "operating activities", "investing activities","financing activities"], "bo_sung_luu_chuyen_tien_te"),
+        (["contingent", "commitment", "related part", "segment", "subsequent", "event after", "going concern", "comparative"], "nhung_thong_tin_khac"),
+    ]
+
+    @classmethod
+    def map_HEADING_TO_SECTION(cls, heading: str) -> str:
+        h = heading.lower()
+        for keywords, section_key in cls.HEADING_TO_SECTION:
+            if any(kw in h for kw in keywords):
+                return section_key
+        return "bo_sung_bang_can_doi"
+
+    def extract_notes_structured(self, file_path: str, page_start: int, page_end: int, year: int):
+        texts = []
+        with pdfplumber.open(file_path) as pdf:
+            imgs = convert_from_path(file_path, first_page=page_start + 1, last_page=min(page_end + 1, len(pdf.pages)), dpi=400)
+            for i, page_num in enumerate(range(page_start, page_end + 1)):
+                if i >= len(imgs):
+                    break
+                page = pdf.pages[page_num]
+                text = page.extract_text() or ""
+                if text.strip():
+                    texts.append(text)
+                else:
+                    ocr_text = pytesseract.image_to_string(imgs[i], lang="eng")
+                    texts.append(ocr_text)
+        full_text = "\n".join(texts)
+        raw_notes = self.extract_all_to_format(full_text)
+
+        notes = FinancialNotesReport(page_start=page_start, page_end=page_end, year=year)
+        notes.raw_data = raw_notes
+
+        KEY_MAP = [
+            ("dac_diem_hoat_dong", lambda k: "đặc điểm hoạt động" in k),
+            ("ky_ke_toan_tien_te", lambda k: "kỳ kế toán" in k),
+            ("chuan_muc_che_do", lambda k: "chuẩn mực" in k),
+            ("chinh_sach_hoat_dong_lien_tuc", lambda k: "hoạt động liên tục" in k and "không" not in k),
+            ("chinh_sach_khong_lien_tuc", lambda k: "không đáp ứng" in k or "không liên tục" in k),
+            ("bo_sung_bang_can_doi", lambda k: "bảng cân đối" in k),
+            ("bo_sung_ket_qua_kd", lambda k: "kết quả" in k),
+            ("bo_sung_luu_chuyen_tien_te", lambda k: "lưu chuyển tiền tệ" in k),
+            ("nhung_thong_tin_khac",lambda k: "thông tin khác" in k or "những thông tin" in k),
+        ]
+
+        for section in raw_notes:
+            if not isinstance(section, dict):
+                continue
+            for key, value in section.items():
+                kl = key.lower()
+                for field_name, matcher in KEY_MAP:
+                    if matcher(kl):
+                        if field_name in ("dac_diem_hoat_dong", "bo_sung_bang_can_doi", "nhung_thong_tin_khac"):
+                            setattr(notes, field_name, value if isinstance(value, dict) else {"noi_dung": str(value)})
+                        else:
+                            setattr(notes, field_name, str(value) if value else None)
+                        break
+
+        tables = FinancialNotesExtractor.extract_tables_from_pages(file_path, page_start, page_end)
+        if not tables:
+            return notes
+
+        notes.tables = tables
+        for heading, rows in tables.items():
+            section_field = self.map_HEADING_TO_SECTION(heading)
+            renamed_rows = self.rename_notes_columns(rows, heading)
+
+            current = getattr(notes, section_field, None)
+            if current is None:
+                current = {}
+            if not isinstance(current, dict):
+                current = {"noi_dung": str(current)}
+            if heading in current and isinstance(current[heading], list):
+                current[heading].extend(renamed_rows)
+            else:
+                current[heading] = renamed_rows
+
+            setattr(notes, section_field, current)
+
+        return notes

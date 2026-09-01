@@ -63,7 +63,7 @@ def data_cleaning_node(state:AgentState):
 def propose_action_node(state: AgentState) -> AgentState:
     messages = state['messages']
     existing_actions = state.get('pending_cleaning', [])
-    covered_actions = [(a.column, a.line_item_canonical, a.actionType) for a in existing_actions]
+    covered_actions = [(a.statement_type, a.period, a.column, a.line_item_canonical, a.actionType) for a in existing_actions]
     file_path = state.get('file_path', '')
     file_format = state.get('file_format', 'csv')
     dataset_profile = state.get('dataset_profile', {})
@@ -88,13 +88,18 @@ def propose_action_node(state: AgentState) -> AgentState:
         to address, return a JSON object with "actionType": "none" to signal completion.
         
         IMPORTANT RULES FOR FINANCIAL DATA (Long-format):
-        - DO NOT impute missing financial figures (e.g. using mean/median across companies). Financial missing data usually means 'not reported'. 
-        If imputing, you MUST ensure the accounting identity (Assets = Liabilities + Equity) is preserved, or simply choose "none" or "drop_rows". 
+        - IMPUTE_MEDIAN/MEAN/MODE are RESTRICTED to non-accounting metadata columns only (e.g. sector, company_name).
+          For core accounting line items (revenue, assets, liabilities, equity, etc.), use IMPUTE_ZERO instead.
+          Financial missing data usually means 'not reported' = 0.
         - Outlier detection MUST be calculated per 'line_item_canonical' (per-group), not globally across all values, 
         because different metrics (e.g. Total Assets vs Profit Margin) have completely different scales.
         - You should propose actions for specific line items, by specifying 'line_item_canonical' and 'statement_type' in your action output.
+        - FIX_OCR_NUMERIC: Use for columns where numeric values were corrupted by OCR (spaces in numbers, O→0, l→1).
+        - RECONCILE_IDENTITY: Use to flag rows where Assets != Liabilities + Equity. This only flags, does NOT auto-correct.
+        - STANDARDIZE_UNIT: Use when values across periods have inconsistent currency units (e.g. VND vs million VND).
         
-        Valid actionType values: "drop_rows", "impute_median", "impute_mean", "impute_mode", "cast_dtype", "drop_column", "none"
+        Valid actionType values: "drop_rows", "impute_median", "impute_mean", "impute_mode", "impute_zero", 
+        "cast_dtype", "drop_column", "fix_ocr_numeric", "reconcile_identity", "standardize_unit", "none"
         """
     )
     structured_llm = llm.with_structured_output(CleaningAction, method='json_mode')
@@ -102,10 +107,12 @@ def propose_action_node(state: AgentState) -> AgentState:
         [system_prompt] + 
         [HumanMessage(content=f"Dataset profile (pre-computed): {dataset_profile}\nValid dataset columns: {valid_cols}")] + 
         messages + [HumanMessage(content=
-            f"""Already proposed actions (column, line_item_canonical, actionType): {covered_actions}
+            f"""Already proposed actions (statement_type, period, column, line_item_canonical, actionType): {covered_actions}
             Summarize as JSON matching schema for ONE action only:
-            {{"file_path": "{file_path}", "file_format": "{file_format}", "reason": str, "column": str, "line_item_canonical": str|null, "statement_type": str|null, "rows_affected": int|null, "rows_ratio": float|null, 
-            "risk_level": "low"|"medium"|"high"|null, "actionType": "drop_rows"|"impute_median"|"impute_mean"|"impute_mode"|"cast_dtype"|"drop_column"|"none", "target_dtype": str|null}}
+            {{"file_path": "{file_path}", "file_format": "{file_format}", "reason": str, "column": str, "line_item_canonical": str|null, "statement_type": str|null, "period": str|null, "fiscal_year": int|null,
+            "rows_affected": int|null, "rows_ratio": float|null, 
+            "risk_level": "low"|"medium"|"high"|null, "actionType": "drop_rows"|"impute_median"|"impute_mean"|"impute_mode"|"impute_zero"|"cast_dtype"|"drop_column"|"fix_ocr_numeric"|"reconcile_identity"|"standardize_unit"|"none", 
+            "target_dtype": str|null, "target_unit": str|null}}
             """
         )]
     )

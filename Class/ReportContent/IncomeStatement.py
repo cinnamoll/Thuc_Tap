@@ -11,29 +11,7 @@ class IncomeStatementLine(BaseModel):
     luy_ke_ky_nay: Optional[float] = None
     luy_ke_ky_truoc: Optional[float] = None
 
-    @field_validator("ky_nay", "ky_truoc", mode="before")
-    @classmethod
-    def parse_numeric(cls, value):
-        if value is None or value == "" or value == "-":
-            return None
-        if isinstance(value, (int, float)):
-            return float(value)
-        s = str(value).strip()
-        negative = s.startswith("(") and s.endswith(")")
-        if negative:
-            s = s[1:-1]
-        s = s.replace(" ", "")
-        if s.count(".") > 1 and "," not in s:
-            s = s.replace(".", "")
-        elif "," in s:
-            s = s.replace(",", "")
-        try:
-            number = float(s)
-            return -number if negative else number
-        except ValueError:
-            return None
-        
-    @field_validator("luy_ke_ky_nay", "luy_ke_ky_truoc", mode="before")
+    @field_validator("ky_nay", "ky_truoc", "luy_ke_ky_nay", "luy_ke_ky_truoc", mode="before")
     @classmethod
     def parse_numeric(cls, value):
         if value is None or value == "" or value == "-":

@@ -17,5 +17,10 @@ def dedupe_list(left: Optional[List[str]], right: Optional[List[str]]) -> List[s
 class EDAInsight(BaseModel):
     column: str
     line_item_canonical: Optional[str] = None
+    insight_type: Optional[str] = None   
+    statement_type: Optional[str] = None  
+    period: Optional[str] = None          
+    fiscal_year: Optional[int] = None    
+    review_flag: Optional[bool] = None 
     metric_value: Annotated[Dict[str, float], "str is the metric name, float is its value"]
     chart_paths: Annotated[List[str], dedupe_list] 

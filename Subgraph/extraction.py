@@ -4,7 +4,7 @@ import pdfplumber
 
 from Class.FinancialState import FinancialReportState
 from Class.FinancialNotes import FinancialNotesExtractor
-from Class.DataDrivenTableExtractor import DataDrivenTableExtractor
+from Class.TableExtractor import TableExtractor
 
 from Class.ReportContent.BalanceSheet import BalanceSheet, BalanceSheetLine
 from Class.ReportContent.CashFlowStatement import CashFlowStatement, CashFlowLine
@@ -35,47 +35,6 @@ def parse_number(val):
         return -number if negative else number
     except ValueError:
         return None
-
-def serialize_tables(obj):
-    if hasattr(obj, "to_dict") and hasattr(obj, "fillna"):
-        return obj.fillna("").to_dict(orient="records")
-    if isinstance(obj, dict):
-        return {k: serialize_tables(v) for k, v in obj.items()}
-    return obj
-
-def figures_from_tables(tables, code_map: dict) -> dict:
-    if tables is None:
-        return
-    
-    rows = []
-    stack = [tables]
-    while stack:
-        current = stack.pop()
-        if current is None:
-            continue
-        if hasattr(current, "to_dict") and hasattr(current, "columns"):
-            rows.extend(current.to_dict(orient="records"))
-        elif isinstance(current, list):
-            for item in current:
-                if isinstance(item, dict):
-                    rows.append(item)
-        elif isinstance(current, dict):
-            stack.extend(current.values())
-    
-    data = {}
-    for field, codes in code_map.items():
-        for row in rows:
-            code = str(row.get("Mã số", "")).strip()
-            if code not in codes:
-                continue
-            for col in ["Số cuối kỳ", "Kỳ này", "Lũy kế kỳ này"]:
-                parsed = parse_number(row.get(col))
-                if parsed is not None:
-                    data[field] = parsed
-                    break
-            if field in data:
-                break
-    return data
 
 def extract_financial_figures(text: str) -> dict:
     data = {}
@@ -168,21 +127,20 @@ def assign_page_ranges_by_markers(page_texts: list) -> dict:
     return ranges
 
 def extract_balance_sheet_pages(file_path: str, page_start: int, page_end: int, year: int) -> BalanceSheet:
-    raw_bs = DataDrivenTableExtractor().extract_table(file_path, page_start, page_end, "BS")
+    raw_bs = TableExtractor().extract_table(file_path, page_start, page_end, "BS")
  
     bs = BalanceSheet(page_start=page_start, page_end=page_end, year=year)
     bs.raw_data = raw_bs
  
     BS_CODE = {"tong_tai_san": ["270"], "no_phai_tra": ["300", "330"], "von_chu_so_huu": ["400", "410"]}
 
-    # Tinh toan figure tu list dict
     data = {}
     for field, codes in BS_CODE.items():
         for row in raw_bs:
-            code = str(row.get("Mã số", "")).strip()
+            code = str(row.get("Code", "")).strip()
             if code not in codes:
                 continue
-            for col in ["Số cuối kỳ", "Kỳ này", "Lũy kế kỳ này"]:
+            for col in ["period_current", "period_current", "accum_current"]:
                 if row.get(col) is not None:
                     data[field] = row[col]
                     break
@@ -204,39 +162,42 @@ def extract_balance_sheet_pages(file_path: str, page_start: int, page_end: int, 
                 sections[current_part] = lines
             current_part = prefix
             lines = []
-        if rec.get("Chỉ tiêu"):
+        if rec.get("Items"):
             lines.append(BalanceSheetLine(
                 prefix=prefix,
-                chi_tieu=rec.get("Chỉ tiêu", ""),
-                ma_so=rec.get("Mã số"),
-                so_cuoi_ky=rec.get("Số cuối kỳ"),
-                so_dau_nam=rec.get("Số đầu năm"),
+                chi_tieu=rec.get("Items", ""),
+                ma_so=rec.get("Code"),
+                thuyet_minh=rec.get("Notes"),
+                so_cuoi_ky=rec.get("period_current"),
+                so_dau_nam=rec.get("period_prior"),
             ))
             
     if current_part and lines:
         sections[current_part] = lines
-    elif lines: # fallback neu khong co part
+    elif lines: 
         sections["ALL"] = lines
-        
     bs.sections = sections
  
     return bs
 
 def extract_income_statement_pages(file_path: str, page_start: int, page_end: int, year: int, full_text: str) -> IncomeStatement:
-    raw_pl = DataDrivenTableExtractor().extract_table(file_path, page_start, page_end, "PL")
+    raw_pl = TableExtractor().extract_table(file_path, page_start, page_end, "PL")
  
     pl = IncomeStatement(page_start=page_start, page_end=page_end, year=year)
     pl.raw_data = raw_pl
  
     line_items = []
     for rec in raw_pl:
-        if rec.get("Chỉ tiêu"):
+        if rec.get("Items"):
             line_items.append(IncomeStatementLine(
                 stt=rec.get("Prefix"),
-                chi_tieu=rec.get("Chỉ tiêu", ""),
-                ma_so=rec.get("Mã số"),
-                ky_nay=rec.get("Kỳ này"),
-                ky_truoc=rec.get("Kỳ trước"),
+                chi_tieu=rec.get("Items", ""),
+                ma_so=rec.get("Code"),
+                thuyet_minh=rec.get("Notes"),
+                ky_nay=rec.get("period_current"),
+                ky_truoc=rec.get("period_prior"),
+                luy_ke_ky_nay=rec.get("accum_current"),
+                luy_ke_ky_truoc=rec.get("accum_prior"),
             ))
     pl.line_items = line_items
  
@@ -245,10 +206,10 @@ def extract_income_statement_pages(file_path: str, page_start: int, page_end: in
     data = {}
     for field, codes in PL_CODE.items():
         for row in raw_pl:
-            code = str(row.get("Mã số", "")).strip()
+            code = str(row.get("Code", "")).strip()
             if code not in codes:
                 continue
-            for col in ["Số cuối kỳ", "Kỳ này", "Lũy kế kỳ này"]:
+            for col in ["period_current", "period_current", "accum_current"]:
                 if row.get(col) is not None:
                     data[field] = row[col]
                     break
@@ -267,7 +228,7 @@ def extract_income_statement_pages(file_path: str, page_start: int, page_end: in
     return pl
 
 def extract_cash_flow_pages(file_path: str, page_start: int, page_end: int, year: int) -> CashFlowStatement:
-    raw_cf = DataDrivenTableExtractor().extract_table(file_path, page_start, page_end, "CF")
+    raw_cf = TableExtractor().extract_table(file_path, page_start, page_end, "CF")
  
     cf = CashFlowStatement(page_start=page_start, page_end=page_end, year=year)
     cf.raw_data = raw_cf
@@ -284,13 +245,14 @@ def extract_cash_flow_pages(file_path: str, page_start: int, page_end: int, year
             current_section = prefix
             lines = []
             
-        if rec.get("Chỉ tiêu"):
+        if rec.get("Items"):
             lines.append(CashFlowLine(
                 prefix=prefix,
-                chi_tieu=rec.get("Chỉ tiêu", ""),
-                ma_so=rec.get("Mã số"),
-                luy_ke_ky_nay=rec.get("Lũy kế kỳ này"),
-                luy_ke_ky_truoc=rec.get("Lũy kế kỳ trước"),
+                chi_tieu=rec.get("Items", ""),
+                ma_so=rec.get("Code"),
+                thuyet_minh=rec.get("Notes"),
+                luy_ke_ky_nay=rec.get("accum_current"),
+                luy_ke_ky_truoc=rec.get("accum_prior"),
             ))
             
     if current_section and lines:
@@ -301,38 +263,6 @@ def extract_cash_flow_pages(file_path: str, page_start: int, page_end: int, year
     cf.sections = sections
  
     return cf
-
-def extract_notes_pages(text: str, page_start: int, page_end: int, year: int) -> FinancialNotesReport:
-    raw_notes = FinancialNotesExtractor().extract_all_to_format(text)
- 
-    notes = FinancialNotesReport(page_start=page_start, page_end=page_end, year=year)
-    notes.raw_data = raw_notes
- 
-    for section in raw_notes:
-        if not isinstance(section, dict):
-            continue
-        for key, value in section.items():
-            key_lower = key.lower()
-            if "đặc điểm hoạt động" in key_lower:
-                notes.dac_diem_hoat_dong = value if isinstance(value, dict) else {"noi_dung": str(value)}
-            elif "kỳ kế toán" in key_lower:
-                notes.ky_ke_toan_tien_te = str(value) if value else None
-            elif "chuẩn mực" in key_lower:
-                notes.chuan_muc_che_do = str(value) if value else None
-            elif "hoạt động liên tục" in key_lower and "không" not in key_lower:
-                notes.chinh_sach_hoat_dong_lien_tuc = str(value) if value else None
-            elif "không đáp ứng" in key_lower or "không liên tục" in key_lower:
-                notes.chinh_sach_khong_lien_tuc = str(value) if value else None
-            elif "bảng cân đối" in key_lower:
-                notes.bo_sung_bang_can_doi = value if isinstance(value, dict) else {"noi_dung": str(value)}
-            elif "kết quả" in key_lower:
-                notes.bo_sung_ket_qua_kd = str(value) if value else None
-            elif "lưu chuyển tiền tệ" in key_lower:
-                notes.bo_sung_luu_chuyen_tien_te = str(value) if value else None
-            elif "thông tin khác" in key_lower or "những thông tin" in key_lower:
-                notes.nhung_thong_tin_khac = value if isinstance(value, dict) else {"noi_dung": str(value)}
- 
-    return notes
 
 def extraction_worker_node(state: FinancialReportState) -> dict:
     file_path = state.get("file_path", "")
@@ -408,9 +338,8 @@ def extraction_worker_node(state: FinancialReportState) -> dict:
             
         if "NOTES" in page_ranges:
             ps, pe = page_ranges["NOTES"]
-            notes_text = "\n".join(page_texts[ps : min(pe + 1, total_pages)])
-            notes_obj = extract_notes_pages(notes_text, ps, pe, year)
-            state['financial_data'].append(bs_obj)
+            notes_obj = FinancialNotesExtractor().extract_notes_structured(file_path, ps, pe, year)
+            state['notes'].append(notes_obj)
             
         core_fields = {
             "doanh_thu",

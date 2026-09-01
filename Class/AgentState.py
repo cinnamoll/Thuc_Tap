@@ -29,6 +29,9 @@ class AgentState(TypedDict):
     file_format: str
     run_id:str
     dataset_profile: dict
+    statement_type: Optional[Literal["BalanceSheet", "CashFlow", "IncomeStatement", "FinancialNotes"]]
+    period: Optional[str]       
+    fiscal_year: Optional[int]
     univariate: Annotated[List[dict], operator.add]
     
     action_type: Literal['cleaning', 'engineering', 'insight']
@@ -60,6 +63,5 @@ class AgentState(TypedDict):
     pending_question: Optional[str]
     output_path: Optional[str]
 
-    # Accounting validation fields (used by validator for identity checks)
     harmonized_dataset: Dict[str, Any]
     validation_flags: List[Dict[str, Any]]

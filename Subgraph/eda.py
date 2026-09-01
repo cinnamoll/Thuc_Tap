@@ -77,6 +77,7 @@ def univariate_analyst_numeric(file_path: str, file_format: str, column: str, gr
             upper_bound = q3 + 1.5 * iqr
 
             outlier_count = int(((series < lower_bound) | (series > upper_bound)).sum())
+            review_flag = outlier_count > 0  # Flag for review, not for cleaning
 
             if skew_val is None or pd.isna(skew_val):
                 skew_desc = "Unidentified"
@@ -107,6 +108,7 @@ def univariate_analyst_numeric(file_path: str, file_format: str, column: str, gr
                 "skewness": round(float(skew_val) if not pd.isna(skew_val) else 0.0, 4),
                 "skewness_description": skew_desc,
                 "outliers_count": outlier_count,
+                "review_flag": review_flag,  # True = needs review, not cleaning
                 "lower_bound": round(float(lower_bound), 4),
                 "upper_bound": round(float(upper_bound), 4)
             }
@@ -132,6 +134,7 @@ def univariate_analyst_numeric(file_path: str, file_format: str, column: str, gr
         upper_bound = q3 + 1.5 * iqr
 
         outlier_count = int(((series < lower_bound) | (series > upper_bound)).sum())
+        review_flag = outlier_count > 0
 
         if skew_val is None or pd.isna(skew_val):
             skew_desc = "Unidentified"
@@ -161,6 +164,7 @@ def univariate_analyst_numeric(file_path: str, file_format: str, column: str, gr
             "skewness": round(float(skew_val) if not pd.isna(skew_val) else 0.0, 4),
             "skewness_description": skew_desc,
             "outliers_count": outlier_count,
+            "review_flag": review_flag,
             "lower_bound": round(float(lower_bound), 4),
             "upper_bound": round(float(upper_bound), 4)
         }
@@ -306,8 +310,164 @@ def draw_graph(file_path: str, file_format: str, cols: List[str], tool_call_id: 
         "chart_paths": [file_name], 
         "messages": [ToolMessage(content=f"Graph successfully drawn and saved at {file_name}", tool_call_id=tool_call_id)]
     })
+
+@tool
+def trend_analysis(file_path: str, file_format: str, column: str, group_by: str, time_col: str, tool_call_id: Annotated[str, InjectedToolCallId]) -> str:
+    """
+    Generate line charts showing trends of each line item across periods/years.
+    Use this instead of histogram/boxplot for time-series financial data.
+
+    Args:
+        file_path (str): path to the dataset file
+        column (str): name of the value column to plot
+        group_by (str): column to group by (e.g. 'line_item_canonical')
+        time_col (str): column representing time periods (e.g. 'fiscal_year', 'period')
+
+    Returns:
+        Trend chart saved to file + trend statistics per group
+    """
+    df = read_df(file_path, file_format)
+    for c in [column, group_by, time_col]:
+        if c not in df.columns:
+            return Command(update={"messages": [ToolMessage(content=f"Column '{c}' not found.", tool_call_id=tool_call_id)]})
+
+    df = df.dropna(subset=[column, group_by, time_col])
+    groups = df[group_by].unique()
+    trend_stats = []
+
+    plt.figure(figsize=(14, 8))
+    for grp in groups[:15]:  # Limit to 15 groups for readability
+        sub = df[df[group_by] == grp].sort_values(time_col)
+        plt.plot(sub[time_col].astype(str), sub[column], marker='o', label=str(grp)[:30])
+        if len(sub) > 1:
+            start_val = sub[column].iloc[0]
+            end_val = sub[column].iloc[-1]
+            growth = ((end_val - start_val) / abs(start_val) * 100) if start_val != 0 else 0.0
+            trend_stats.append({"group": str(grp), "start": round(float(start_val), 2), "end": round(float(end_val), 2), "total_growth_pct": round(float(growth), 2)})
+
+    plt.title(f"Trend Analysis: {column} by {group_by}")
+    plt.xlabel(time_col)
+    plt.ylabel(column)
+    plt.legend(bbox_to_anchor=(1.05, 1), loc='upper left', fontsize=7)
+    plt.xticks(rotation=45)
+    plt.tight_layout()
+    file_name = f"trend_{column}_{group_by}_eda_output.png"
+    plt.savefig(file_name)
+    plt.close()
+
+    return Command(update={
+        "chart_paths": [file_name],
+        "univariate": trend_stats,
+        "messages": [ToolMessage(content=f"Trend chart saved at {file_name}. Stats: {trend_stats[:5]}", tool_call_id=tool_call_id)]
+    })
+
+@tool
+def common_size_analysis(file_path: str, file_format: str, column: str, group_by: str, base_item: str, time_col: str, tool_call_id: Annotated[str, InjectedToolCallId]) -> str:
+    """
+    Express each line item as a percentage of a base item (e.g. Total Assets for BS, Revenue for IS).
+
+    Args:
+        file_path (str): path to the dataset file
+        column (str): name of the value column
+        group_by (str): column identifying line items (e.g. 'line_item_canonical')
+        base_item (str): the line item to use as 100% base (e.g. 'tong_tai_san', 'doanh_thu')
+        time_col (str): column representing time periods
+
+    Returns:
+        Common-size percentages per line item per period
+    """
+    df = read_df(file_path, file_format)
+    for c in [column, group_by, time_col]:
+        if c not in df.columns:
+            return Command(update={"messages": [ToolMessage(content=f"Column '{c}' not found.", tool_call_id=tool_call_id)]})
+
+    results = []
+    for period_val in df[time_col].unique():
+        period_df = df[df[time_col] == period_val]
+        base_rows = period_df[period_df[group_by] == base_item]
+        base_val = base_rows[column].sum() if not base_rows.empty else 0.0
+
+        for _, row in period_df.iterrows():
+            pct = (row[column] / base_val * 100) if base_val != 0 else 0.0
+            results.append({
+                "period": str(period_val),
+                "line_item": str(row[group_by]),
+                "value": round(float(row[column]), 2),
+                "common_size_pct": round(float(pct), 2)
+            })
+
+    return Command(update={
+        "univariate": results[:50],
+        "messages": [ToolMessage(content=f"Common-size analysis complete. {len(results)} items computed. Sample: {results[:3]}", tool_call_id=tool_call_id)]
+    })
+
+@tool
+def cross_statement_consistency_check(file_path: str, file_format: str, tool_call_id: Annotated[str, InjectedToolCallId]) -> str:
+    """
+    Cross-reference key figures between financial statements:
+    - Net Income consistency between IncomeStatement and CashFlow (operating)
+    - Balance Sheet identity: Assets = Liabilities + Equity
+
+    Args:
+        file_path (str): path to the harmonized dataset file
+
+    Returns:
+        List of consistency flags with severity levels
+    """
+    df = read_df(file_path, file_format)
+    flags = []
+
+    ASSET_KEY = "tong_tai_san"
+    LIAB_KEY = "no_phai_tra"
+    EQUITY_KEY = "von_chu_so_huu"
+    PROFIT_KEY = "loi_nhuan_sau_thue"
+
+    # Check if long-format with line_item_canonical
+    if "line_item_canonical" in df.columns and "value" in df.columns:
+        time_col = None
+        for candidate in ["fiscal_year", "year", "period"]:
+            if candidate in df.columns:
+                time_col = candidate
+                break
+        if time_col:
+            for period_val in df[time_col].unique():
+                period_df = df[df[time_col] == period_val]
+                vals = dict(zip(period_df["line_item_canonical"], period_df["value"]))
+                assets = vals.get(ASSET_KEY, 0.0)
+                liab = vals.get(LIAB_KEY, 0.0)
+                equity = vals.get(EQUITY_KEY, 0.0)
+                if assets > 0 and (liab > 0 or equity > 0):
+                    diff = abs(assets - (liab + equity))
+                    if diff > 1e-2:
+                        flags.append({
+                            "period": str(period_val),
+                            "check": "balance_sheet_identity",
+                            "message": f"Assets ({assets:.2f}) != Liabilities + Equity ({liab + equity:.2f}), diff={diff:.2f}",
+                            "severity": "HIGH",
+                            "review_flag": True
+                        })
+    # Check wide-format
+    elif all(k in df.columns for k in [ASSET_KEY, LIAB_KEY, EQUITY_KEY]):
+        for idx, row in df.iterrows():
+            diff = abs(row[ASSET_KEY] - (row[LIAB_KEY] + row[EQUITY_KEY]))
+            if diff > 1e-2:
+                flags.append({
+                    "row": int(idx),
+                    "check": "balance_sheet_identity",
+                    "message": f"Row {idx}: Assets ({row[ASSET_KEY]:.2f}) != L+E ({row[LIAB_KEY] + row[EQUITY_KEY]:.2f})",
+                    "severity": "HIGH",
+                    "review_flag": True
+                })
+
+    if not flags:
+        flags.append({"check": "all_passed", "message": "No cross-statement inconsistencies found.", "severity": "LOW", "review_flag": False})
+
+    return Command(update={
+        "univariate": flags,
+        "messages": [ToolMessage(content=f"Cross-statement check complete. Flags: {flags}", tool_call_id=tool_call_id)]
+    })
     
-eda_tools = [univariate_analyst_numeric, univariate_analyst_cat, draw_graph]
+eda_tools = [univariate_analyst_numeric, univariate_analyst_cat, draw_graph, trend_analysis, common_size_analysis, cross_statement_consistency_check]
 tool_node = ToolNode(eda_tools)
 eda_llm = llm.bind_tools(tools=eda_tools)
 eda_tools_dict = {eda_tool.name: eda_tool for eda_tool in eda_tools}
@@ -339,12 +499,18 @@ def propose_insight_node(state: AgentState) -> AgentState:
         2. Always call the profiling or univariate tools first to understand the dataset's schema, 
         distributions, and basic statistics. 
         IMPORTANT: If analyzing long-format financial data, you MUST use `group_by='line_item_canonical'` in `univariate_analyst_numeric` tool to get statistics per line item. Analyzing the 'value' column globally is meaningless.
-        3. Look at the insights already covered in 'Already proposed insights' below — do NOT propose 
+        3. For financial time-series data, prefer `trend_analysis` (line charts across periods) over histogram/boxplot.
+        4. Use `common_size_analysis` to express line items as % of Total Assets (BS) or Revenue (IS).
+        5. Use `cross_statement_consistency_check` to verify figures across statements.
+        6. Look at the insights already covered in 'Already proposed insights' below — do NOT propose 
         an insight for a (column, line_item_canonical, metric) tuple that already has one, unless explicitly asked to redo it.
-        4. Pick exactly ONE remaining column/metric (and specific line_item_canonical if applicable) with the most impactful unresolved insight 
-        (central tendency, dispersion, distribution shape, correlation, etc.) and propose a single 
+        7. Pick exactly ONE remaining column/metric (and specific line_item_canonical if applicable) with the most impactful unresolved insight 
+        (central tendency, dispersion, distribution shape, trend, common-size, cross-statement, etc.) and propose a single 
         EDAInsight for it, including a suggested visualization if relevant.
-        5. If every meaningful insight has already been proposed, return: {{"column": "none", "metric_value": {{"NONE": 0.0}}}}
+        8. Outlier detections should be labeled as REVIEW FLAGS — they are business signals to investigate,
+        NOT cleaning suggestions. Set review_flag=True for outlier insights.
+        9. Set insight_type to one of: "univariate", "trend", "common_size", "cross_statement", "outlier_review".
+        10. If every meaningful insight has already been proposed, return: {{"column": "none", "metric_value": {{"NONE": 0.0}}}}
         """
     )
 

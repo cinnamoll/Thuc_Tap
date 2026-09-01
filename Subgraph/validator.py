@@ -8,7 +8,7 @@ from pydantic import ValidationError
 from Class.AgentState import AgentState
 from Class.CleaningAction import CleaningAction, CleaningActionType
 from Class.EDAInsight import EDAInsight
-from Class.EngineeringAction import EngineeringAction, EncodingType, BinningType
+from Class.EngineeringAction import EngineeringAction, EncodingType, BinningType, FinancialFeatureType
 from Subgraph.cleaning import cleaning
 from Subgraph.eda import eda 
 from Subgraph.feature import feature_engineering
@@ -31,6 +31,14 @@ def compute_impact_cleaning(action: CleaningAction, dataset_profile: dict) -> di
         affected = stats.get(f"{action.column}_nulls", 0)
     elif action.actionType == CleaningActionType.DROP_COLUMN:
         affected = total_rows 
+    elif action.actionType == CleaningActionType.IMPUTE_ZERO:
+        affected = stats.get(f"{action.column}_nulls", 0)
+    elif action.actionType == CleaningActionType.FIX_OCR_NUMERIC:
+        affected = total_rows  # Potentially affects all rows
+    elif action.actionType == CleaningActionType.RECONCILE_IDENTITY:
+        affected = total_rows  # Check applies to all rows
+    elif action.actionType == CleaningActionType.STANDARDIZE_UNIT:
+        affected = total_rows  # Unit conversion applies to all rows
     else:
         affected = 0  
     return {"rows_affected": affected, "rows_ratio": affected / total_rows if total_rows else 0.0}
@@ -56,6 +64,8 @@ def compute_impact_engineering(action: EngineeringAction, dataset_profile: dict)
         affected = stats.get(f"{action.column}_nunique", 0)
     elif action.actionType in (BinningType.EQUAL, BinningType.QUANTILE): 
         affected = null_count  
+    elif isinstance(action.actionType, FinancialFeatureType):
+        affected = total_rows  # Financial features apply to all rows
     else:
         affected = 0
     return {"rows_affected": affected, "rows_ratio": affected / total_rows if total_rows else 0.0}
@@ -150,7 +160,7 @@ def validator_node(state: AgentState) -> dict:
             return {"validation": False, "validation_error": "schema_invalid"}
 
         act_type = getattr(action, "actionType", None)
-        if isinstance(action, EDAInsight) or act_type == CleaningActionType.NONE or act_type == EncodingType.NONE or act_type == BinningType.NONE:
+        if isinstance(action, EDAInsight) or act_type == CleaningActionType.NONE or act_type == EncodingType.NONE or act_type == BinningType.NONE or act_type == FinancialFeatureType.NONE:
             continue
 
         if valid_cols and action.column and action.column not in valid_cols:

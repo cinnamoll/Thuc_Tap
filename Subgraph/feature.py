@@ -9,7 +9,7 @@ import pandas as pd
 from langgraph.types import Command
 
 from Class.AgentState import AgentState
-from Class.EngineeringAction import EngineeringAction, EncodingType, BinningType
+from Class.EngineeringAction import EngineeringAction, EncodingType, BinningType, FinancialFeatureType
 
 load_dotenv()
 
@@ -140,9 +140,124 @@ def preview_binning_standard_tool(file_path: str, file_format: str, column: str,
         "preview_feature": res,
         "messages": [ToolMessage(content="Binning/Standardize complete " + str(res), tool_call_id=tool_call_id)]
     })
-    
 
-feature_tools = [preview_encoding_tool, preview_binning_standard_tool]
+@tool 
+def preview_growth_rate_tool(file_path: str, file_format: str, column: str, group_by: str, time_col: str, tool_call_id: Annotated[str, InjectedToolCallId], length: int = 20) -> str:
+    """
+    Preview YoY/QoQ growth rate computation for a numeric column grouped by line items.
+
+    Args:
+        file_path (str): path to the dataset file
+        column (str): name of the numeric value column
+        group_by (str): grouping column (e.g. 'line_item_canonical')
+        time_col (str): time period column (e.g. 'fiscal_year')
+        length (int): number of rows to preview
+
+    Returns:
+        Preview of growth rate computation
+    """
+    df = read_df(file_path, file_format)
+    for c in [column, group_by, time_col]:
+        if c not in df.columns:
+            return f"'{c}' not found in dataset."
+
+    df = df.sort_values([group_by, time_col])
+    df[f"{column}_growth_rate"] = df.groupby(group_by)[column].pct_change() * 100
+    preview = df[[group_by, time_col, column, f"{column}_growth_rate"]].head(length)
+
+    res = {"Target Column": column, "Method": "derive_growth_rate", f"First {length} rows": preview.to_string(index=False)}
+    return Command(update={"preview_feature": res, "messages": [ToolMessage(content="Growth rate preview: " + str(res), tool_call_id=tool_call_id)]})
+
+@tool
+def preview_lag_feature_tool(file_path: str, file_format: str, column: str, group_by: str, time_col: str, tool_call_id: Annotated[str, InjectedToolCallId], length: int = 20) -> str:
+    """
+    Preview lag feature (previous period value) for a column grouped by line items.
+
+    Args:
+        file_path (str): path to the dataset file
+        column (str): name of the value column
+        group_by (str): grouping column (e.g. 'line_item_canonical')
+        time_col (str): time period column
+        length (int): number of rows to preview
+
+    Returns:
+        Preview of lag feature
+    """
+    df = read_df(file_path, file_format)
+    for c in [column, group_by, time_col]:
+        if c not in df.columns:
+            return f"'{c}' not found in dataset."
+
+    df = df.sort_values([group_by, time_col])
+    df[f"{column}_lag_1"] = df.groupby(group_by)[column].shift(1)
+    preview = df[[group_by, time_col, column, f"{column}_lag_1"]].head(length)
+
+    res = {"Target Column": column, "Method": "lag_feature", f"First {length} rows": preview.to_string(index=False)}
+    return Command(update={"preview_feature": res, "messages": [ToolMessage(content="Lag feature preview: " + str(res), tool_call_id=tool_call_id)]})
+
+@tool
+def preview_common_size_tool(file_path: str, file_format: str, column: str, group_by: str, base_item: str, time_col: str, tool_call_id: Annotated[str, InjectedToolCallId], length: int = 20) -> str:
+    """
+    Preview common-size transformation: express each value as % of a base item per period.
+
+    Args:
+        file_path (str): path to the dataset file
+        column (str): value column
+        group_by (str): grouping column (e.g. 'line_item_canonical')
+        base_item (str): line item to use as 100% base (e.g. 'tong_tai_san')
+        time_col (str): time period column
+        length (int): number of rows to preview
+
+    Returns:
+        Preview of common-size percentages
+    """
+    df = read_df(file_path, file_format)
+    for c in [column, group_by, time_col]:
+        if c not in df.columns:
+            return f"'{c}' not found in dataset."
+
+    results = []
+    for period_val in df[time_col].unique():
+        period_df = df[df[time_col] == period_val]
+        base_rows = period_df[period_df[group_by] == base_item]
+        base_val = base_rows[column].sum() if not base_rows.empty else 0.0
+        for _, row in period_df.iterrows():
+            pct = (row[column] / base_val * 100) if base_val != 0 else 0.0
+            results.append({group_by: row[group_by], time_col: period_val, column: row[column], "common_size_pct": round(pct, 2)})
+
+    preview_df = pd.DataFrame(results).head(length)
+    res = {"Target Column": column, "Method": "common_size_transform", f"First {length} rows": preview_df.to_string(index=False)}
+    return Command(update={"preview_feature": res, "messages": [ToolMessage(content="Common-size preview: " + str(res), tool_call_id=tool_call_id)]})
+
+@tool
+def preview_cross_statement_join_tool(file_path: str, file_format: str, join_key: str, tool_call_id: Annotated[str, InjectedToolCallId], length: int = 20) -> str:
+    """
+    Preview cross-statement join readiness. Shows how data would be structured after joining
+    BS+IS+CF by period key.
+
+    Args:
+        file_path (str): path to the dataset file
+        join_key (str): the period key column to join on (e.g. 'fiscal_year')
+        length (int): number of rows to preview
+
+    Returns:
+        Preview of join structure
+    """
+    df = read_df(file_path, file_format)
+    if join_key not in df.columns:
+        return f"'{join_key}' not found in dataset."
+
+    if "statement_type" in df.columns:
+        pivot = df.groupby([join_key, "statement_type"]).size().reset_index(name="count")
+        preview = pivot.head(length)
+    else:
+        preview = df[[join_key]].drop_duplicates().head(length)
+        preview["note"] = "No statement_type column — will be tagged during execution"
+
+    res = {"Join Key": join_key, "Method": "cross_statement_join", f"First {length} rows": preview.to_string(index=False)}
+    return Command(update={"preview_feature": res, "messages": [ToolMessage(content="Cross-statement join preview: " + str(res), tool_call_id=tool_call_id)]})
+
+feature_tools = [preview_encoding_tool, preview_binning_standard_tool, preview_growth_rate_tool, preview_lag_feature_tool, preview_common_size_tool, preview_cross_statement_join_tool]
 tool_node = ToolNode(feature_tools)
 feature_llm = llm.bind_tools(tools=feature_tools)
 feature_tools_dict = {feature_tool.name: feature_tool for feature_tool in feature_tools}
@@ -174,19 +289,26 @@ def propose_action_node(state: AgentState) -> AgentState:
         2. Call the encoding tool for categorical columns and preview the column(s) head after encoding; 
         call the standardization or binning tool for numerical columns and preview the column(s) head 
         after transformation.
-        3. Look at the actions already covered in 'Already proposed actions' below — do NOT propose 
+        3. For financial time-series data, prefer the financial feature tools:
+           - `preview_growth_rate_tool`: YoY/QoQ growth rates per line item
+           - `preview_lag_feature_tool`: previous period values
+           - `preview_common_size_tool`: % of total assets/revenue
+           - `preview_cross_statement_join_tool`: prepare join of BS+IS+CF by period key
+        4. Look at the actions already covered in 'Already proposed actions' below — do NOT propose 
         an action for a target that already has one, unless explicitly asked to redo it.
-        4. Pick exactly ONE remaining column/transformation with the most impactful unresolved issue 
+        5. Pick exactly ONE remaining column/transformation with the most impactful unresolved issue 
         and propose a single EngineeringAction for it.
-        5. If every column has already been adequately transformed, or there is nothing further worth 
+        6. If every column has already been adequately transformed, or there is nothing further worth 
         proposing, return a JSON object with "actionType": "none" to signal completion.
         
         IMPORTANT RULES FOR FINANCIAL DATA (Long-format):
         - DO NOT propose standard financial ratios (e.g. ROE, ROA, Debt-to-Equity). These are handled by a dedicated `ratio_trend_engine`.
-        - DO NOT propose one-hot encoding for `line_item_canonical` or other metadata columns in the long-format data.
-        - You SHOULD propose actions like 'binning' continuous variables according to industry thresholds, or calculating simple temporal variables (e.g. raw YoY growth).
+        - EncodingType (label/ordinal/frequency/one-hot) is RESTRICTED to metadata columns only (statement_type, industry, period).
+        - BinningType: only 'standardize' is valid for accounting data. Do NOT use 'equal_width' or 'quantile' on core financial figures.
+        - Prefer FinancialFeatureType actions: derive_growth_rate, common_size_transform, lag_feature, cross_statement_join.
         
-        Valid actionType values: "label_encoding", "ordinal_encoding", "frequency_encoding", "one_hot_encoding", "equal_width", "quantile", "standardize", "none"
+        Valid actionType values: "label_encoding", "ordinal_encoding", "frequency_encoding", "one_hot_encoding", 
+        "equal_width", "quantile", "standardize", "derive_growth_rate", "common_size_transform", "lag_feature", "cross_statement_join", "none"
         """
     )
     structured_llm = llm.with_structured_output(EngineeringAction, method='json_mode')
@@ -196,8 +318,12 @@ def propose_action_node(state: AgentState) -> AgentState:
         messages + [HumanMessage(content=
             f"""Already proposed actions (column, line_item_canonical, actionType): {covered_actions}
             Summarize as JSON matching schema for ONE action only:
-            {{"file_path": "{file_path}", "file_format": "{file_format}", "reason": str, "column": str, "line_item_canonical": str|null, "rows_affected": int | null, "rows_ratio": float | null,
-                "risk_level": "low" | "medium" | "high" | null, "actionType": "label_encoding"|"ordinal_encoding"|"frequency_encoding"|"one_hot_encoding"|"equal_width"|"quantile"|"standardize"|"none", "n_bin": int}}\n
+            {{"file_path": "{file_path}", "file_format": "{file_format}", "reason": str, "column": str, "line_item_canonical": str|null, 
+            "statement_type": str|null, "period": str|null, "fiscal_year": int|null,
+            "rows_affected": int | null, "rows_ratio": float | null,
+            "risk_level": "low" | "medium" | "high" | null, 
+            "actionType": "label_encoding"|"ordinal_encoding"|"frequency_encoding"|"one_hot_encoding"|"equal_width"|"quantile"|"standardize"|"derive_growth_rate"|"common_size_transform"|"lag_feature"|"cross_statement_join"|"none", 
+            "n_bin": int, "base_item": str|null, "time_column": str|null}}\n
             Preview the column for user using {state.get('preview_feature', '')}
             """
         )]
@@ -208,7 +334,7 @@ def propose_action_node(state: AgentState) -> AgentState:
         res.file_format = file_format
 
     summary = "\n".join(f"- {a.column} ({a.line_item_canonical}): {a.actionType}" for a in existing_actions)
-    if res.actionType in (EncodingType.NONE, BinningType.NONE): 
+    if res.actionType in (EncodingType.NONE, BinningType.NONE, FinancialFeatureType.NONE): 
         return Command(update={"engineer_done": True})
 
     return Command(update={

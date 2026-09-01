@@ -2,12 +2,13 @@ from langchain_core.messages import SystemMessage
 from langchain_core.tools import tool
 import pandas as pd
 import numpy as np
+import re
 from langgraph.types import interrupt
 
 from Class.AgentState import AgentState
 from Class.CleaningAction import CleaningAction, CleaningActionType
 from Class.EDAInsight import EDAInsight
-from Class.EngineeringAction import EngineeringAction, EncodingType, BinningType
+from Class.EngineeringAction import EngineeringAction, EncodingType, BinningType, FinancialFeatureType
 
 def read_df(file_path: str, file_format: str) -> pd.DataFrame:
     if file_format == "csv":
@@ -61,6 +62,55 @@ def cleaning_tool(action: CleaningAction, output_path: str) -> str:
         df[action.column] = df[action.column].astype(target_dtype)
     elif action.actionType == CleaningActionType.DROP_COLUMN:
         df = df.drop(columns=[action.column])
+    elif action.actionType == CleaningActionType.IMPUTE_ZERO:
+        df[action.column] = df[action.column].fillna(0)
+    elif action.actionType == CleaningActionType.FIX_OCR_NUMERIC:
+        def fix_ocr_value(val):
+            if pd.isna(val):
+                return val
+            s = str(val).strip()
+            s = s.replace('O', '0').replace('o', '0')
+            s = s.replace('l', '1').replace('I', '1')
+            s = re.sub(r'(?<=\d)\s+(?=\d)', '', s)  # "1 234" -> "1234"
+            s = s.replace(',', '')                     # "1,234" -> "1234"
+            try:
+                return float(s)
+            except ValueError:
+                return val
+        df[action.column] = df[action.column].apply(fix_ocr_value)
+    elif action.actionType == CleaningActionType.RECONCILE_IDENTITY:
+        # Deterministic check: Assets = Liabilities + Equity — flag only, no auto-correct
+        ASSET_KEY = "tong_tai_san"
+        LIAB_KEY = "no_phai_tra"
+        EQUITY_KEY = "von_chu_so_huu"
+        if all(k in df.columns for k in [ASSET_KEY, LIAB_KEY, EQUITY_KEY]):
+            df["identity_diff"] = df[ASSET_KEY] - (df[LIAB_KEY] + df[EQUITY_KEY])
+            df["identity_flag"] = df["identity_diff"].abs() > 1e-2
+        else:
+            df["identity_flag"] = False
+            df["identity_diff"] = 0.0
+    elif action.actionType == CleaningActionType.STANDARDIZE_UNIT:
+        target_unit = getattr(action, 'target_unit', None) or 'VND_BILLION'
+        UNIT_MULTIPLIERS = {
+            'VND': 1,
+            'VND_THOUSAND': 1_000,
+            'VND_MILLION': 1_000_000,
+            'VND_BILLION': 1_000_000_000,
+        }
+        target_mult = UNIT_MULTIPLIERS.get(target_unit, 1_000_000_000)
+        if pd.api.types.is_numeric_dtype(df[action.column]):
+            col_max = df[action.column].abs().max()
+            if col_max > 0:
+                # Heuristic: detect current unit scale
+                if col_max > 1e12:
+                    current_mult = 1           # raw VND
+                elif col_max > 1e9:
+                    current_mult = 1_000       # thousands
+                elif col_max > 1e6:
+                    current_mult = 1_000_000   # millions
+                else:
+                    current_mult = 1_000_000_000  # already billions
+                df[action.column] = df[action.column] * current_mult / target_mult
 
     df.to_csv(output_path, index=False) 
     return f"Use '{action}' on '{action.column}', save at {output_path}"
@@ -150,6 +200,74 @@ def binning_standardizing_tool(action: EngineeringAction, output_path:str) -> st
     
     return f"Use '{action}' on '{action.column}', save at {output_path}. Output head: {sample_str}"
 
+@tool
+def financial_feature_tool(action: EngineeringAction, output_path: str) -> str:
+    """
+    Apply financial-domain feature engineering actions to prepare data for ratio_trend_engine.
+    Does NOT compute financial ratios — only derives growth rates, lags, common-size transforms,
+    and cross-statement joins.
+
+    Args:
+        action (EngineeringAction): Specifies the financial feature action
+        output_path (str): Path to save output
+
+    Returns:
+        str: Summary of action applied
+    """
+    df = read_df(action.file_path, action.file_format)
+    if action.column not in df.columns:
+        raise ValueError(f"Column '{action.column}' not found in dataset. Valid columns: {df.columns.tolist()}")
+
+    group_col = "line_item_canonical" if "line_item_canonical" in df.columns else None
+    time_col = action.time_column or "fiscal_year"
+    if time_col not in df.columns:
+        for candidate in ["fiscal_year", "year", "period", "quarter"]:
+            if candidate in df.columns:
+                time_col = candidate
+                break
+
+    if action.actionType == FinancialFeatureType.DERIVE_GROWTH_RATE:
+        if group_col and time_col in df.columns:
+            df = df.sort_values([group_col, time_col])
+            df[f"{action.column}_growth_rate"] = df.groupby(group_col)[action.column].pct_change() * 100
+        elif time_col in df.columns:
+            df = df.sort_values(time_col)
+            df[f"{action.column}_growth_rate"] = df[action.column].pct_change() * 100
+        else:
+            df[f"{action.column}_growth_rate"] = np.nan
+
+    elif action.actionType == FinancialFeatureType.LAG_FEATURE:
+        if group_col and time_col in df.columns:
+            df = df.sort_values([group_col, time_col])
+            df[f"{action.column}_lag_1"] = df.groupby(group_col)[action.column].shift(1)
+        elif time_col in df.columns:
+            df = df.sort_values(time_col)
+            df[f"{action.column}_lag_1"] = df[action.column].shift(1)
+        else:
+            df[f"{action.column}_lag_1"] = np.nan
+
+    elif action.actionType == FinancialFeatureType.COMMON_SIZE_TRANSFORM:
+        base_item = action.base_item or "tong_tai_san"
+        if group_col and time_col in df.columns:
+            base_mask = df[group_col] == base_item
+            base_vals = df.loc[base_mask, [time_col, action.column]].set_index(time_col)[action.column]
+            df[f"{action.column}_common_size_pct"] = df.apply(
+                lambda row: (row[action.column] / base_vals.get(row.get(time_col, None), 1)) * 100
+                if base_vals.get(row.get(time_col, None), 0) != 0 else 0.0,
+                axis=1
+            )
+        else:
+            total = df[action.column].sum()
+            df[f"{action.column}_common_size_pct"] = (df[action.column] / total * 100) if total != 0 else 0.0
+
+    elif action.actionType == FinancialFeatureType.CROSS_STATEMENT_JOIN:
+        if "statement_type" not in df.columns and action.statement_type:
+            df["statement_type"] = action.statement_type
+
+    df.to_csv(output_path, index=False)
+    sample_str = df.head(5).to_string(index=False)
+    return f"Use '{action.actionType.value}' on '{action.column}', save at {output_path}. Output head: {sample_str}"
+
 def executor_node(state: AgentState) -> dict:
     action_type = state.get('action_type')
     if action_type == 'cleaning':
@@ -223,6 +341,8 @@ def executor_node(state: AgentState) -> dict:
                 result = encoding_tool.invoke({"action": action, "output_path": output_path})
             elif isinstance(action.actionType, BinningType):
                 result = binning_standardizing_tool.invoke({"action": action, "output_path": output_path})
+            elif isinstance(action.actionType, FinancialFeatureType):
+                result = financial_feature_tool.invoke({"action": action, "output_path": output_path})
             else:
                 raise TypeError(f"Unsupported EngineeringAction.actionType: {type(action.actionType).__name__}")
         elif isinstance(action, EDAInsight):  
