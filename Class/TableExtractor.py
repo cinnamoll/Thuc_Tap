@@ -37,7 +37,7 @@ class TableExtractor:
     def is_financial_number(self, text: str) -> bool:
         t = text.strip()
         digit_only = re.sub(r"[,.()\- ]", "", t)
-        return bool(self.RE_FINANCIAL.match(t)) and len(digit_only) >= 6
+        return bool(self.RE_FINANCIAL.match(t)) and len(digit_only) >= 4
 
     def parse_number(self, val: Optional[str]) -> Optional[float]:
         if val is None: 

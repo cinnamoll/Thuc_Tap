@@ -43,7 +43,6 @@ def supervisor_core(state: AgentState):
     if run_id == "": 
         run_id = f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:6]}" 
 
-    # Enforce graph sequence: cleaning -> eda -> feature_engineering -> final
     if not state.get("cleaning_done"):
         goto = "cleaning"
         reason = "Sequence rule: cleaning step required first."
@@ -86,10 +85,7 @@ def supervisor_core(state: AgentState):
     elif goto == "eda":
         action_type = "insight"
 
-    update_dict = {  
-        "run_id": run_id, 
-        "messages": [HumanMessage(content=f"[Supervisor] -> {goto}: {reason}")],
-    }
+    update_dict = {"run_id": run_id, "messages": [HumanMessage(content=f"[Supervisor] -> {goto}: {reason}")]}
     if action_type:
         update_dict["action_type"] = action_type
 

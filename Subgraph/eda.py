@@ -336,7 +336,7 @@ def trend_analysis(file_path: str, file_format: str, column: str, group_by: str,
     trend_stats = []
 
     plt.figure(figsize=(14, 8))
-    for grp in groups[:15]:  # Limit to 15 groups for readability
+    for grp in groups[:15]: 
         sub = df[df[group_by] == grp].sort_values(time_col)
         plt.plot(sub[time_col].astype(str), sub[column], marker='o', label=str(grp)[:30])
         if len(sub) > 1:
@@ -417,12 +417,8 @@ def cross_statement_consistency_check(file_path: str, file_format: str, tool_cal
     df = read_df(file_path, file_format)
     flags = []
 
-    ASSET_KEY = "tong_tai_san"
-    LIAB_KEY = "no_phai_tra"
-    EQUITY_KEY = "von_chu_so_huu"
-    PROFIT_KEY = "loi_nhuan_sau_thue"
+    # PROFIT_KEY = "loi_nhuan_sau_thue"
 
-    # Check if long-format with line_item_canonical
     if "line_item_canonical" in df.columns and "value" in df.columns:
         time_col = None
         for candidate in ["fiscal_year", "year", "period"]:
@@ -433,9 +429,9 @@ def cross_statement_consistency_check(file_path: str, file_format: str, tool_cal
             for period_val in df[time_col].unique():
                 period_df = df[df[time_col] == period_val]
                 vals = dict(zip(period_df["line_item_canonical"], period_df["value"]))
-                assets = vals.get(ASSET_KEY, 0.0)
-                liab = vals.get(LIAB_KEY, 0.0)
-                equity = vals.get(EQUITY_KEY, 0.0)
+                assets = vals.get("tong_tai_san", 0.0)
+                liab = vals.get("no_phai_tra", 0.0)
+                equity = vals.get("von_chu_so_huu", 0.0)
                 if assets > 0 and (liab > 0 or equity > 0):
                     diff = abs(assets - (liab + equity))
                     if diff > 1e-2:
@@ -446,15 +442,14 @@ def cross_statement_consistency_check(file_path: str, file_format: str, tool_cal
                             "severity": "HIGH",
                             "review_flag": True
                         })
-    # Check wide-format
-    elif all(k in df.columns for k in [ASSET_KEY, LIAB_KEY, EQUITY_KEY]):
+    elif all(k in df.columns for k in ["tong_tai_san", "no_phai_tra", "von_chu_so_huu"]):
         for idx, row in df.iterrows():
-            diff = abs(row[ASSET_KEY] - (row[LIAB_KEY] + row[EQUITY_KEY]))
+            diff = abs(row["tong_tai_san"] - (row["no_phai_tra"] + row["von_chu_so_huu"]))
             if diff > 1e-2:
                 flags.append({
                     "row": int(idx),
                     "check": "balance_sheet_identity",
-                    "message": f"Row {idx}: Assets ({row[ASSET_KEY]:.2f}) != L+E ({row[LIAB_KEY] + row[EQUITY_KEY]:.2f})",
+                    "message": f"Row {idx}: Assets ({row["tong_tai_san"]:.2f}) != L+E ({row["no_phai_tra"] + row["von_chu_so_huu"]:.2f})",
                     "severity": "HIGH",
                     "review_flag": True
                 })

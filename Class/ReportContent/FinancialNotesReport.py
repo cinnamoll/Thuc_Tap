@@ -19,6 +19,7 @@ class FinancialNotesReport(BaseModel):
     nhung_thong_tin_khac: Optional[Dict[str, Any]] = None
 
     tables: Optional[Dict[str, List[dict]]] = None
+    sections: Optional[Dict[str, List[dict]]] = None
     raw_data: Optional[Any] = None
     model_config = {"arbitrary_types_allowed": True}
 
@@ -52,4 +53,5 @@ class FinancialNotesReport(BaseModel):
             "bo_sung_luu_chuyen_tien_te": bool(self.bo_sung_luu_chuyen_tien_te),
             "nhung_thong_tin_khac": self.nhung_thong_tin_khac is not None,
             "tables": bool(self.tables),
+            "sections": list(self.sections.keys()) if self.sections else [],
         }

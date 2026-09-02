@@ -8,10 +8,10 @@ from Class.ReportContent.BalanceSheet import BalanceSheet
 
 class AccountingValidationFlag(TypedDict):
     year: int
-    flag_type: str  # 'identity_violation' | 'yoy_anomaly'
+    flag_type: str  
     field: str
     message: str
-    severity: str   # 'HIGH' | 'MEDIUM' | 'LOW'
+    severity: str 
 
 class FinancialReportState(TypedDict):
     batch_id: str
@@ -24,25 +24,21 @@ class FinancialReportState(TypedDict):
     cash_data: List[CashFlowStatement]
     balance_data: List[BalanceSheet]
 
-    # extracted_data: Annotated[List[Dict[str, Any]], operator.add]
+    extracted_data: Annotated[List[Dict[str, Any]], operator.add]
 
-    # Schema Harmonizer — unified & currency-normalised dataset
-    harmonized_dataset: Dict[str, Any]
+    harmonized_dataset: List[Dict[str, Any]]
+    narrative_store: List[Dict[str, Any]]
     currency_unit: str = 'VND_BILLION'
 
-    # ── Accounting validation ──────────────────────────────────────────────────
     validation_flags: List[AccountingValidationFlag]
 
-    # ── Ratio & Trend Analysis ─────────────────────────────────────────────────
-    ratios: Dict[str, Dict[int, float]]   # ratio_name -> {year: value}
-    trends: Dict[str, Dict[str, float]]   # metric_name -> {YoY_%, CAGR_%}
+    ratios: Dict[str, Dict[int, float]]  
+    trends: Dict[str, Dict[str, float]]   
 
-    # ── Report output ──────────────────────────────────────────────────────────
     narrative_mda: str
     final_report_md: str
     output_report_path: Optional[str]
 
-    # ── Structured report content (serialized Pydantic models) ────────────────
     balance_sheet_obj: Optional[Dict[str, Any]]
     income_statement_obj: Optional[Dict[str, Any]]
     cash_flow_obj: Optional[Dict[str, Any]]

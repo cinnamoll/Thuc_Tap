@@ -56,10 +56,8 @@ class IncomeStatement(BaseModel):
 
     raw_data: Optional[List[Dict[str, Any]]] = None
 
-    @field_validator("doanh_thu", "cac_khoan_giam_tru", "doanh_thu_thuan",
-                     "gia_von_hang_ban", "loi_nhuan_gop", "doanh_thu_tai_chinh",
-                     "chi_phi_tai_chinh", "chi_phi_ban_hang", "chi_phi_quan_ly",
-                     "loi_nhuan_thuan_kd", "loi_nhuan_truoc_thue",
+    @field_validator("doanh_thu", "cac_khoan_giam_tru", "doanh_thu_thuan","gia_von_hang_ban", "loi_nhuan_gop", "doanh_thu_tai_chinh",
+                     "chi_phi_tai_chinh", "chi_phi_ban_hang", "chi_phi_quan_ly", "loi_nhuan_thuan_kd", "loi_nhuan_truoc_thue",
                      "chi_phi_thue_tndn", "loi_nhuan_sau_thue", mode="before")
     @classmethod
     def parse_aggregate(cls, value):

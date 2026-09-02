@@ -25,8 +25,7 @@ def pdf_dispatcher(state: FinancialReportState) -> dict:
             "quarter_or_period": None,
             "scope": "Không xác định",    
             "is_signed": False,
-            "hash_id": None,
-            "lang": "vi"
+            "hash_id": None
         }
 
         name_lower = name_no_ext.lower()

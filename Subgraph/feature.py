@@ -130,11 +130,7 @@ def preview_binning_standard_tool(file_path: str, file_format: str, column: str,
     else: 
         return "Unsupported binning type" 
     
-    res = {
-        "Target Column": column,
-        "Method": encode,
-        f"First {length} rows": new_df.to_string(index=False)
-    }
+    res = {"Target Column": column, "Method": encode, f"First {length} rows": new_df.to_string(index=False)}
     
     return Command(update={
         "preview_feature": res,

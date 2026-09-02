@@ -13,7 +13,6 @@ matplotlib.use('Agg')
 llm = ChatDeepSeek(model="deepseek-v4-flash")
 
 def plot_roe_roa(ratios: dict, output_dir: str = "Subgraph_Img") -> str | None:
-    """Vẽ biểu đồ xu hướng ROE & ROA qua các năm."""
     if "ROE" not in ratios or not ratios["ROE"]:
         return None
 
@@ -36,7 +35,6 @@ def plot_roe_roa(ratios: dict, output_dir: str = "Subgraph_Img") -> str | None:
     return chart_path
 
 def plot_revenue_profit(harmonized: dict, output_dir: str = "Subgraph_Img") -> str | None:
-    """Vẽ biểu đồ combo bar (doanh thu) + line (LNST) qua các năm."""
     if not harmonized:
         return None
 
@@ -63,7 +61,6 @@ def plot_revenue_profit(harmonized: dict, output_dir: str = "Subgraph_Img") -> s
     return chart_path
 
 def write_narrative_mda(harmonized: dict, ratios: dict, trends: dict, flags: list) -> str:
-    """Dùng LLM sinh văn bản phân tích MD&A."""
     prompt = f"""
     Hãy viết báo cáo phân tích quản trị (MD&A) chi tiết bằng tiếng Việt dựa trên dữ liệu sau:
     - Dữ liệu tài chính đã chuẩn hóa (đơn vị: tỷ VND): {harmonized}
@@ -89,7 +86,6 @@ def write_narrative_mda(harmonized: dict, ratios: dict, trends: dict, flags: lis
         )
         
 def assemble_report_markdown(narrative: str, ratios: dict, trends: dict, flags: list, chart_paths: list) -> str:
-    """Tổng hợp tất cả thành phần thành markdown report."""
     report = "# BÁO CÁO PHÂN TÍCH TÀI CHÍNH ĐA NIÊN\n\n"
     report += f"## 1. Phân tích Tường thuật Quản trị (MD&A)\n\n{narrative}\n\n"
 
@@ -111,17 +107,11 @@ def assemble_report_markdown(narrative: str, ratios: dict, trends: dict, flags: 
     return report
 
 def generate_report_node(state: FinancialReportState) -> dict:
-    """
-    Sinh báo cáo tài chính đa niên: narrative MD&A + biểu đồ xu hướng + markdown.
-
-    Sử dụng utility functions từ Subgraph/multi_year/reporting.py
-    """
     ratios = state.get("ratios", {})
     trends = state.get("trends", {})
     flags = state.get("validation_flags", [])
     harmonized = state.get("harmonized_dataset", {})
 
-    # ── 1. Sinh biểu đồ xu hướng ─────────────────────────────────────────────
     chart_paths = []
     path = plot_roe_roa(ratios)
     if path:
@@ -130,21 +120,13 @@ def generate_report_node(state: FinancialReportState) -> dict:
     if path:
         chart_paths.append(path)
 
-    # ── 2. Sinh narrative MD&A ────────────────────────────────────────────────
     narrative = write_narrative_mda(harmonized, ratios, trends, flags)
-
-    # ── 3. Tổng hợp markdown report ──────────────────────────────────────────
     report = assemble_report_markdown(narrative, ratios, trends, flags, chart_paths)
 
-    return {
-        "narrative_mda": narrative,
-        "final_report_md": report,
-        "chart_paths": chart_paths,
-    }
+    return {"narrative_mda": narrative, "final_report_md": report, "chart_paths": chart_paths}
 
 
 def build_report_node(state: FinancialReportState) -> dict:
-    """Ghi markdown report ra disk."""
     report_md = state.get("final_report_md", "")
     batch_id = state.get("batch_id", "unknown")
 

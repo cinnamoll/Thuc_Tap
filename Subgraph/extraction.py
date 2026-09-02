@@ -8,7 +8,6 @@ from Class.TableExtractor import TableExtractor
 
 from Class.ReportContent.BalanceSheet import BalanceSheet, BalanceSheetLine
 from Class.ReportContent.CashFlowStatement import CashFlowStatement, CashFlowLine
-from Class.ReportContent.FinancialNotesReport import FinancialNotesReport
 from Class.ReportContent.IncomeStatement import IncomeStatement, IncomeStatementLine
 
 def parse_number(val):
@@ -48,11 +47,7 @@ def extract_financial_figures(text: str) -> dict:
     
     for field, patterns in KEYWORD_MAP.items():
         for pattern in patterns:
-            match = re.search(
-                pattern + r"[:\s]*([0-9][0-9.,\s]*)",
-                text,
-                re.IGNORECASE,
-            )
+            match = re.search(pattern + r"[:\s]*([0-9][0-9.,\s]*)", text, re.IGNORECASE)
             if match:
                 raw_num = match.group(1).replace(" ", "").replace(",", "")
                 if raw_num.count(".") > 1:

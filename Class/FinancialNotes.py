@@ -2,6 +2,7 @@ import re
 import pdfplumber
 import pytesseract
 from pdf2image import convert_from_path
+from collections import Counter
 
 from Class.TableExtractor import TableExtractor, Word
 from Class.ReportContent.FinancialNotesReport import FinancialNotesReport
@@ -127,7 +128,7 @@ class FinancialNotesExtractor:
             return ""
 
         cleaned_text = re.sub(r'[ \t]+', ' ', full_text)
-        cleaned_text = re.sub(r'\r\n', '\n', full_text)
+        cleaned_text = re.sub(r'\r\n', '\n', cleaned_text)
 
         sec_dac_diem = self.slice_section(cleaned_text, self.sections_regex["dac_diem_hoat_dong"])
         sec_ky_ke_toan = self.slice_section(cleaned_text, self.sections_regex["ky_ke_toan_tien_te"])
@@ -206,19 +207,67 @@ class FinancialNotesExtractor:
     
     SECTION_NO = re.compile(r"^(\d{1,2}(?:\.\d+)?)\s+(.+)$")
     NUMBER_FORMAT = re.compile(r"^\d{1,2}(\.\d+)?$")
+    SECTION_HEADER_RE = re.compile(r"^(\d{1,2}(?:\.\d+)?)\s+(.+)$", re.MULTILINE)
+    HEADING_TO_SECTION: list[tuple[list[str], str]] = [
+        (["cash", "receivable", "inventory", "inventories", "tangible", "intangible", "fixed asset", "investment","payable", "loan", "borrowing", "finance lease", "provision", "equity", "prepaid"],
+            "bo_sung_bang_can_doi",
+        ),
+        (["revenue", "income", "expense", "cost of", "profit","selling", "administrative", "financial income", "financial expense"],
+            "bo_sung_ket_qua_kd",
+        ),
+        (["cash flow", "operating activities","investing activities", "financing activities"],
+            "bo_sung_luu_chuyen_tien_te",
+        ),
+        (["contingent", "commitment", "related part", "segment", "subsequent", "event after", "events since", "going concern", "comparative",],
+            "nhung_thong_tin_khac",
+        ),
+    ]
+
+    def map_heading_to_section(self, heading: str) -> str:
+        h = heading.lower()
+        for keywords, section_key in self.HEADING_TO_SECTION:
+            if any(kw in h for kw in keywords):
+                return section_key
+        return "bo_sung_bang_can_doi"
+
     @staticmethod
     def build_notes_row(cleaned:dict) -> dict:
         row = {
-            "Prefix": cleaned.get("prefix") or "",
             "Items": cleaned.get("chi_tieu", ""),
-            "Code": cleaned.get("ma_so", ""),
-            "Notes": cleaned.get("notes", "")
         }
-        reserved = {"prefix", "chi_tieu", "ma_so", "notes"}
+        reserved = {"chi_tieu"}
         for k, v in cleaned.items():
             if k not in reserved:
                 row[k] = v
         return row
+    
+    @staticmethod
+    def parse_section_key(heading: str) -> tuple:
+        m = re.compile(r"^(\d{1,2}(?:\.\d+)?)").match(heading)
+        if not m:
+            return (999, 0)
+        parts = m.group(1).split(".")
+        major = int(parts[0])
+        minor = int(parts[1]) if len(parts) > 1 else 0
+        return (major, minor)
+
+    @staticmethod
+    def is_valid_section_key(key: str) -> bool:
+        if len(key) > 80:
+            return False
+        if re.compile(r"^\d{1,2}(?:\.\d+)?\s+\d+(\s+\d+)*$").match(key.strip()):
+            return False
+
+        prefix_m = re.match(r"^\d{1,2}(?:\.\d+)?\s*", key)
+        suffix = key[prefix_m.end():].strip() if prefix_m else key
+        if suffix:
+            non_word = re.sub(r"[\w\s]", "", suffix)   
+            ratio = len(non_word) / len(suffix)
+            if ratio >= 0.25:
+                return False
+            if not re.search(r"[A-Za-z]{2,}", suffix):
+                return False
+        return True
     
     @staticmethod
     def extract_tables_from_pages(file_path: str, page_start: int, page_end: int, dpi: int = 400) -> dict[str, list[dict]]:
@@ -291,7 +340,7 @@ class FinancialNotesExtractor:
                                 if current_table_lines:
                                     segments.append((current_heading, current_table_lines))
                                     current_table_lines = []
-                                
+
                                 if m_num or is_num_format:
                                     current_heading = line_text
                                 else:
@@ -378,21 +427,30 @@ class FinancialNotesExtractor:
             renamed.append(new_row)
         return renamed
 
-    HEADING_TO_SECTION: list[tuple[list[str], str]] = [
-        (["cash", "receivable", "inventory", "inventories","tangible", "intangible", "fixed asset", "investment",
-          "payable", "loan", "borrowing", "finance lease","provision", "equity", "prepaid"], "bo_sung_bang_can_doi"),
-        (["revenue", "income", "expense", "cost of", "profit", "selling", "administrative", "financial income","financial expense"], "bo_sung_ket_qua_kd"),
-        (["cash flow", "operating activities", "investing activities","financing activities"], "bo_sung_luu_chuyen_tien_te"),
-        (["contingent", "commitment", "related part", "segment", "subsequent", "event after", "going concern", "comparative"], "nhung_thong_tin_khac"),
-    ]
+    def slice_by_numeric_sections(self, full_text: str) -> dict:
+        matches = list(self.SECTION_HEADER_RE.finditer(full_text))
 
-    @classmethod
-    def map_HEADING_TO_SECTION(cls, heading: str) -> str:
-        h = heading.lower()
-        for keywords, section_key in cls.HEADING_TO_SECTION:
-            if any(kw in h for kw in keywords):
-                return section_key
-        return "bo_sung_bang_can_doi"
+        result = {}
+        best_len = {}
+        for i, m in enumerate(matches):
+                num_part = m.group(1)
+                title_part = m.group(2).strip()
+                heading = f"{num_part} {title_part}"
+
+                if not self.is_valid_section_key(heading):
+                    continue
+                start = m.end()
+                end = matches[i + 1].start() if i + 1 < len(matches) else len(full_text)
+                content = full_text[start:end].strip()
+
+                key = self.parse_section_key(heading)
+                if key in best_len and len(content) <= best_len[key][1]:
+                    continue 
+                if key in best_len:
+                    del result[best_len[key][0]]
+                best_len[key] = (heading, len(content))
+                result[heading] = content
+        return result
 
     def extract_notes_structured(self, file_path: str, page_start: int, page_end: int, year: int):
         texts = []
@@ -423,7 +481,7 @@ class FinancialNotesExtractor:
             ("bo_sung_bang_can_doi", lambda k: "bảng cân đối" in k),
             ("bo_sung_ket_qua_kd", lambda k: "kết quả" in k),
             ("bo_sung_luu_chuyen_tien_te", lambda k: "lưu chuyển tiền tệ" in k),
-            ("nhung_thong_tin_khac",lambda k: "thông tin khác" in k or "những thông tin" in k),
+            ("nhung_thong_tin_khac", lambda k: "thông tin khác" in k or "những thông tin" in k),
         ]
 
         for section in raw_notes:
@@ -438,26 +496,36 @@ class FinancialNotesExtractor:
                         else:
                             setattr(notes, field_name, str(value) if value else None)
                         break
-
+        cleaned_text = re.sub(r'[ \t]+', ' ', full_text)
+        cleaned_text = re.sub(r'\r\n', '\n', cleaned_text)
+        text_sections = self.slice_by_numeric_sections(cleaned_text)
         tables = FinancialNotesExtractor.extract_tables_from_pages(file_path, page_start, page_end)
-        if not tables:
-            return notes
 
-        notes.tables = tables
-        for heading, rows in tables.items():
-            section_field = self.map_HEADING_TO_SECTION(heading)
-            renamed_rows = self.rename_notes_columns(rows, heading)
+        all_sections = {}
+        table_keys = {self.parse_section_key(h) for h in tables}
+        for heading, text in text_sections.items():
+            if self.parse_section_key(heading) not in table_keys:
+                all_sections[heading] = [{"text": text}]
 
-            current = getattr(notes, section_field, None)
-            if current is None:
-                current = {}
-            if not isinstance(current, dict):
-                current = {"noi_dung": str(current)}
-            if heading in current and isinstance(current[heading], list):
-                current[heading].extend(renamed_rows)
-            else:
-                current[heading] = renamed_rows
+        if tables:
+            notes.tables = tables
+            for heading, rows in tables.items():
+                m = self.SECTION_NO.match(heading)
+                section_num = m.group(1) if m else ""
+                section_field = self.map_heading_to_section(section_num)
+                renamed_rows = self.rename_notes_columns(rows, heading)
+                all_sections[heading] = renamed_rows
 
-            setattr(notes, section_field, current)
+                current = getattr(notes, section_field, None)
+                if current is None:
+                    current = {}
+                if not isinstance(current, dict):
+                    current = {"noi_dung": str(current)}
+                if heading in current and isinstance(current[heading], list):
+                    current[heading].extend(renamed_rows)
+                else:
+                    current[heading] = renamed_rows
+                setattr(notes, section_field, current)
 
+        notes.sections = all_sections if all_sections else None
         return notes

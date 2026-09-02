@@ -71,15 +71,14 @@ def cleaning_tool(action: CleaningAction, output_path: str) -> str:
             s = str(val).strip()
             s = s.replace('O', '0').replace('o', '0')
             s = s.replace('l', '1').replace('I', '1')
-            s = re.sub(r'(?<=\d)\s+(?=\d)', '', s)  # "1 234" -> "1234"
-            s = s.replace(',', '')                     # "1,234" -> "1234"
+            s = re.sub(r'(?<=\d)\s+(?=\d)', '', s)  
+            s = s.replace(',', '')                     
             try:
                 return float(s)
             except ValueError:
                 return val
         df[action.column] = df[action.column].apply(fix_ocr_value)
     elif action.actionType == CleaningActionType.RECONCILE_IDENTITY:
-        # Deterministic check: Assets = Liabilities + Equity — flag only, no auto-correct
         ASSET_KEY = "tong_tai_san"
         LIAB_KEY = "no_phai_tra"
         EQUITY_KEY = "von_chu_so_huu"
@@ -101,15 +100,14 @@ def cleaning_tool(action: CleaningAction, output_path: str) -> str:
         if pd.api.types.is_numeric_dtype(df[action.column]):
             col_max = df[action.column].abs().max()
             if col_max > 0:
-                # Heuristic: detect current unit scale
                 if col_max > 1e12:
-                    current_mult = 1           # raw VND
+                    current_mult = 1           
                 elif col_max > 1e9:
-                    current_mult = 1_000       # thousands
+                    current_mult = 1_000       
                 elif col_max > 1e6:
-                    current_mult = 1_000_000   # millions
+                    current_mult = 1_000_000   
                 else:
-                    current_mult = 1_000_000_000  # already billions
+                    current_mult = 1_000_000_000  
                 df[action.column] = df[action.column] * current_mult / target_mult
 
     df.to_csv(output_path, index=False) 
@@ -149,9 +147,7 @@ def encoding_tool(action: EngineeringAction, output_path:str) -> str:
         df = pd.get_dummies(df, columns=[action.column])
         
     df.to_csv(output_path, index=False)
-    
-    sample_str = df.head(5).to_string(index=False)
-    
+    sample_str = df.head(5).to_string(index=False) 
     return f"Use '{action}' on '{action.column}', save at {output_path}. Output head: {sample_str}"
 
 @tool
@@ -195,9 +191,7 @@ def binning_standardizing_tool(action: EngineeringAction, output_path:str) -> st
         new_df[f"{action.column}_binned"] = pd.qcut(series, q=action.n_bin, duplicates='drop')
         
     new_df.to_csv(output_path, index=False)    
-    
     sample_str = new_df.head(5).to_string(index=False)
-    
     return f"Use '{action}' on '{action.column}', save at {output_path}. Output head: {sample_str}"
 
 @tool

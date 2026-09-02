@@ -1,7 +1,6 @@
 from Class.FinancialState import FinancialReportState
 
 def check_yoy(curr_year, prev_data: dict, curr_data: dict, fields: list[str] | None = None, threshold: float = 0.5) -> list[dict]:
-    """Gắn cờ biến động YoY vượt ngưỡng giữa 2 năm liền kề."""
     if fields is None:
         fields = ["doanh_thu", "loi_nhuan_sau_thue"]
 
@@ -23,7 +22,6 @@ def check_yoy(curr_year, prev_data: dict, curr_data: dict, fields: list[str] | N
     return flags
 
 def compute_single_year_ratios(data: dict) -> dict:
-    """Tính chỉ số tài chính cho 1 năm: ROE, ROA, Debt/Equity, Net Margin."""
     pat = data.get("loi_nhuan_sau_thue", 0.0)
     equity = data.get("von_chu_so_huu", 0.0)
     assets = data.get("tong_tai_san", 0.0)
@@ -38,7 +36,6 @@ def compute_single_year_ratios(data: dict) -> dict:
     }
     
 def compute_multi_year_trends(dataset: dict, fields: list[str] | None = None) -> dict:
-    """Tính YoY growth và CAGR qua nhiều năm."""
     if fields is None:
         fields = ["doanh_thu", "loi_nhuan_sau_thue", "tong_tai_san"]
 
@@ -69,34 +66,20 @@ def compute_multi_year_trends(dataset: dict, fields: list[str] | None = None) ->
     return trends
 
 def ratio_trend_engine(state: FinancialReportState) -> dict:
-    """
-    Tính chỉ số tài chính, xu hướng, và gắn cờ biến động bất thường.
-
-    Sử dụng utility functions từ:
-    - Subgraph/multi_year/analysis.py (ratios, trends)
-    - Subgraph/multi_year/accounting.py (yoy anomaly flags)
-    """
     harmonized = state.get("harmonized_dataset", {})
 
-    # ── 1. Tính chỉ số tài chính ─────────────────────────────────────────────
     ratios = {"ROE": {}, "ROA": {}, "Debt_to_Equity": {}, "Net_Margin": {}}
     for year, data in harmonized.items():
         yr_ratios = compute_single_year_ratios(data)
         for key in ratios:
             ratios[key][year] = yr_ratios.get(key, 0.0)
 
-    # ── 2. Tính xu hướng tăng trưởng ─────────────────────────────────────────
     trends = compute_multi_year_trends(harmonized)
 
-    # ── 3. Gắn cờ biến động bất thường ───────────────────────────────────────
     flags = list(state.get("validation_flags", []))
     years = sorted(harmonized.keys())
     for i in range(1, len(years)):
         yoy_flags = check_yoy(years[i], harmonized[years[i - 1]], harmonized[years[i]])
         flags.extend(yoy_flags)
 
-    return {
-        "ratios": ratios,
-        "trends": trends,
-        "validation_flags": flags,
-    }
+    return {"ratios": ratios, "trends": trends, "validation_flags": flags}

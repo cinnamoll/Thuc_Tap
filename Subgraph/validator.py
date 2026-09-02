@@ -34,11 +34,11 @@ def compute_impact_cleaning(action: CleaningAction, dataset_profile: dict) -> di
     elif action.actionType == CleaningActionType.IMPUTE_ZERO:
         affected = stats.get(f"{action.column}_nulls", 0)
     elif action.actionType == CleaningActionType.FIX_OCR_NUMERIC:
-        affected = total_rows  # Potentially affects all rows
+        affected = total_rows  
     elif action.actionType == CleaningActionType.RECONCILE_IDENTITY:
-        affected = total_rows  # Check applies to all rows
+        affected = total_rows 
     elif action.actionType == CleaningActionType.STANDARDIZE_UNIT:
-        affected = total_rows  # Unit conversion applies to all rows
+        affected = total_rows 
     else:
         affected = 0  
     return {"rows_affected": affected, "rows_ratio": affected / total_rows if total_rows else 0.0}
@@ -65,7 +65,7 @@ def compute_impact_engineering(action: EngineeringAction, dataset_profile: dict)
     elif action.actionType in (BinningType.EQUAL, BinningType.QUANTILE): 
         affected = null_count  
     elif isinstance(action.actionType, FinancialFeatureType):
-        affected = total_rows  # Financial features apply to all rows
+        affected = total_rows  
     else:
         affected = 0
     return {"rows_affected": affected, "rows_ratio": affected / total_rows if total_rows else 0.0}
