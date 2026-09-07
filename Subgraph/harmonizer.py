@@ -2,7 +2,7 @@ import re
 from typing import Any, Dict, List
 
 from Class.FinancialState import FinancialReportState
-from Class.FinancialNotes import FinancialNotesExtractor
+from Class.NotesExtraction.FinancialNotes import FinancialNotesExtractor
 
 def is_valid_value(val: Any) -> bool:
     if val is None:
@@ -20,6 +20,24 @@ def parse_value(val: Any) -> float:
         return float(val)
     except ValueError:
         return 0.0
+
+def is_numeric_literal(val: Any) -> bool:
+    """Only true for actual numbers / numeric strings (with separators,
+    parentheses-negative, or percent). Excludes narrative cells such as
+    'Historical cost' or 'Dec. 31, 2025'."""
+    if isinstance(val, (int, float)):
+        return True
+    if not isinstance(val, str):
+        return False
+    s = val.strip()
+    if not s:
+        return False
+    s = s.rstrip("%")
+    if s.startswith("(") and s.endswith(")"):
+        s = s[1:-1]
+    s = s.replace(",", "").replace(".", "").replace(" ", "").replace("\u00a0", "")
+    cleaned = re.sub(r"[()%,.\- ]", "", val)
+    return cleaned.isdigit()
 
 def schema_harmonizer(state: FinancialReportState) -> dict:
     numeric_df: List[Dict[str, Any]] = []
@@ -122,38 +140,42 @@ def schema_harmonizer(state: FinancialReportState) -> dict:
     notes_ext = FinancialNotesExtractor()
     
     for note in notes_data:
-        if note.sections is None:
-            raise ValueError(f"Fail-fast: FinancialNotesReport.sections is None for year {note.year}")
-            
         year = note.year
         page = note.page_start
+        if not note.tables:
+            continue
+
         table_keys = set()
-        if note.tables:
-            for heading, rows in note.tables.items():
-                if not notes_ext.is_valid_section_key(heading):
-                    continue
-                
-                note_id_tuple = notes_ext.parse_section_key(heading)
+        for heading, rows in note.tables.items():
+            if not rows or not isinstance(rows, list):
+                continue
+            if not notes_ext.is_valid_section_key(heading):
+                continue
+
+            prose_rows = [r for r in rows if isinstance(r, dict) and set(r.keys()) == {"text"}]
+            numeric_rows = [r for r in rows if not (isinstance(r, dict) and set(r.keys()) == {"text"})]
+
+            note_id_tuple = notes_ext.parse_section_key(heading)
+            note_id_str = str(note_id_tuple[0]) if note_id_tuple[0] != 999 else ""
+            if note_id_tuple[0] != 999 and note_id_tuple[1] != 0:
+                note_id_str += f".{note_id_tuple[1]}"
+            m = notes_ext.SECTION_NO.match(heading)
+            section_num = m.group(1) if m else ""
+            note_type = notes_ext.map_heading_to_section(section_num)
+
+            if numeric_rows:
                 table_keys.add(note_id_tuple)
-                
-                m = notes_ext.SECTION_NO.match(heading)
-                section_num = m.group(1) if m else ""
-                note_type = notes_ext.map_heading_to_section(section_num)
-                
-                note_id_str = str(note_id_tuple[0]) if note_id_tuple[0] != 999 else ""
-                if note_id_tuple[0] != 999 and note_id_tuple[1] != 0:
-                    note_id_str += f".{note_id_tuple[1]}"
                 note_title = heading
-                
-                for row in rows:
+                for row in numeric_rows:
+                    if not isinstance(row, dict):
+                        continue
                     row_label = row.get("Items") or row.get("chi_tieu") or ""
                     code = row.get("Code") or row.get("ma_so") or ""
-                    
+
                     for key, val in row.items():
                         if key in ["Items", "chi_tieu", "Code", "ma_so", "Notes", "thuyet_minh", "Prefix", "prefix"]:
                             continue
-                        
-                        if is_valid_value(val):
+                        if is_valid_value(val) and is_numeric_literal(val):
                             numeric_df.append({
                                 "report_type": "notes",
                                 "note_id": note_id_str,
@@ -167,28 +189,15 @@ def schema_harmonizer(state: FinancialReportState) -> dict:
                                 "source_page": page,
                                 "batch_id": batch_id
                             })
-                            
-        if note.sections:
-            for heading, contents in note.sections.items():
-                if not contents or not isinstance(contents, list):
-                    continue
-                
-                if not notes_ext.is_valid_section_key(heading):
-                    continue
-                    
-                note_id_tuple = notes_ext.parse_section_key(heading)
+
+            if prose_rows:
                 if note_id_tuple in table_keys and note_id_tuple != (999, 0):
                     continue
-                    
-                if "text" in contents[0]:
-                    note_id_str = str(note_id_tuple[0]) if note_id_tuple[0] != 999 else ""
-                    if note_id_tuple[0] != 999 and note_id_tuple[1] != 0:
-                        note_id_str += f".{note_id_tuple[1]}"
-                    
+                for tr in prose_rows:
                     narrative_store.append({
                         "note_id": note_id_str,
                         "note_title": heading,
-                        "text": contents[0]["text"]
+                        "text": tr.get("text", "")
                     })
 
     note_id_to_title = {}
@@ -200,7 +209,4 @@ def schema_harmonizer(state: FinancialReportState) -> dict:
             else:
                 note_id_to_title[row["note_id"]] = row["note_title"]
     
-    return {
-        "harmonized_dataset": numeric_df,
-        "narrative_store": narrative_store
-    }
+    return {"harmonized_dataset": numeric_df, "narrative_store": narrative_store}

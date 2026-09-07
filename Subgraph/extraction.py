@@ -3,9 +3,8 @@ import re
 import pdfplumber
 
 from Class.FinancialState import FinancialReportState
-from Class.FinancialNotes import FinancialNotesExtractor
+from Class.NotesExtraction.FinancialNotes import FinancialNotesExtractor
 from Class.TableExtractor import TableExtractor
-
 from Class.ReportContent.BalanceSheet import BalanceSheet, BalanceSheetLine
 from Class.ReportContent.CashFlowStatement import CashFlowStatement, CashFlowLine
 from Class.ReportContent.IncomeStatement import IncomeStatement, IncomeStatementLine
@@ -123,7 +122,6 @@ def assign_page_ranges_by_markers(page_texts: list) -> dict:
 
 def extract_balance_sheet_pages(file_path: str, page_start: int, page_end: int, year: int) -> BalanceSheet:
     raw_bs = TableExtractor().extract_table(file_path, page_start, page_end, "BS")
- 
     bs = BalanceSheet(page_start=page_start, page_end=page_end, year=year)
     bs.raw_data = raw_bs
  
@@ -177,7 +175,6 @@ def extract_balance_sheet_pages(file_path: str, page_start: int, page_end: int, 
 
 def extract_income_statement_pages(file_path: str, page_start: int, page_end: int, year: int, full_text: str) -> IncomeStatement:
     raw_pl = TableExtractor().extract_table(file_path, page_start, page_end, "PL")
- 
     pl = IncomeStatement(page_start=page_start, page_end=page_end, year=year)
     pl.raw_data = raw_pl
  
@@ -224,7 +221,6 @@ def extract_income_statement_pages(file_path: str, page_start: int, page_end: in
 
 def extract_cash_flow_pages(file_path: str, page_start: int, page_end: int, year: int) -> CashFlowStatement:
     raw_cf = TableExtractor().extract_table(file_path, page_start, page_end, "CF")
- 
     cf = CashFlowStatement(page_start=page_start, page_end=page_end, year=year)
     cf.raw_data = raw_cf
  
@@ -334,7 +330,7 @@ def extraction_worker_node(state: FinancialReportState) -> dict:
         if "NOTES" in page_ranges:
             ps, pe = page_ranges["NOTES"]
             notes_obj = FinancialNotesExtractor().extract_notes_structured(file_path, ps, pe, year)
-            state['notes'].append(notes_obj)
+            state['financial_data'].append(notes_obj)
             
         core_fields = {
             "doanh_thu",
