@@ -1,5 +1,6 @@
 from langchain_core.messages import SystemMessage
 from langchain_core.tools import tool
+import os
 import pandas as pd
 import numpy as np
 import re
@@ -9,17 +10,6 @@ from Class.AgentState import AgentState
 from Class.CleaningAction import CleaningAction, CleaningActionType
 from Class.EDAInsight import EDAInsight
 from Class.EngineeringAction import EngineeringAction, EncodingType, BinningType, FinancialFeatureType
-
-def read_df(file_path: str, file_format: str) -> pd.DataFrame:
-    if file_format == "csv":
-        df = pd.read_csv(file_path)
-    elif file_format == "parquet":
-        df = pd.read_parquet(file_path)
-    elif file_format == "json":
-        df = pd.read_json(file_path, lines=True)
-    else:
-        raise ValueError(f"Don't support {file_format}")
-    return df
 
 DTYPE_MAP = {
     "int8": np.int8, "int16": np.int16, "int32": np.int32, "int64": np.int64,
@@ -38,7 +28,7 @@ def cleaning_tool(action: CleaningAction, output_path: str) -> str:
     Only call this tool after clearly identifying the problem via profile_dataset.
     This tool will pause and wait for user confirmation before actually overwriting the data.
     """
-    df = read_df(action.file_path, action.file_format)
+    df = pd.read_csv(action.file_path)
     if action.column not in df.columns:
         raise ValueError(f"Column '{action.column}' not found in dataset. Valid columns: {df.columns.tolist()}")
 
@@ -126,7 +116,7 @@ def encoding_tool(action: EngineeringAction, output_path:str) -> str:
     Returns:
         - New Encoded columns
     """        
-    df = read_df(action.file_path, action.file_format)
+    df = pd.read_csv(action.file_path)
     if action.column not in df.columns:
         raise ValueError(f"Column '{action.column}' not found in dataset. Valid columns: {df.columns.tolist()}")
         
@@ -163,7 +153,7 @@ def binning_standardizing_tool(action: EngineeringAction, output_path:str) -> st
     Returns:
         - A new Binned column
     """
-    df = read_df(action.file_path, action.file_format)
+    df = pd.read_csv(action.file_path)
     if action.column not in df.columns:
         raise ValueError(f"Column '{action.column}' not found in dataset. Valid columns: {df.columns.tolist()}")
 
@@ -208,7 +198,7 @@ def financial_feature_tool(action: EngineeringAction, output_path: str) -> str:
     Returns:
         str: Summary of action applied
     """
-    df = read_df(action.file_path, action.file_format)
+    df = pd.read_csv(action.file_path)
     if action.column not in df.columns:
         raise ValueError(f"Column '{action.column}' not found in dataset. Valid columns: {df.columns.tolist()}")
 
@@ -277,7 +267,10 @@ def executor_node(state: AgentState) -> dict:
     action_id = f"{action.column}_{act_type}"
     reviewed = state.get("reviewed_actions") or []
     run_id = state.get('run_id')
-    output_path = state.get('output_path') or f"output_{action_type}_{run_id}_{action.column}.csv"
+    out_dir = state.get('output_path') or ''
+    if out_dir:
+        os.makedirs(out_dir, exist_ok=True)
+    output_path = os.path.join(out_dir, f"{action_type}_{run_id}_{action.column}.csv") if out_dir else f"{action_type}_{run_id}_{action.column}.csv"
 
     skip_confirm = True if (getattr(action, "risk_level", "low") == "low" or action_id in reviewed) else False 
     fallback_used = False

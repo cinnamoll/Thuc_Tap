@@ -1,358 +1,134 @@
 import os
 import re
+from typing import Any, Dict, Tuple
 import pdfplumber
 
 from Class.FinancialState import FinancialReportState
 from Class.NotesExtraction.FinancialNotes import FinancialNotesExtractor
 from Class.TableExtractor import TableExtractor
-from Class.ReportContent.BalanceSheet import BalanceSheet, BalanceSheetLine
-from Class.ReportContent.CashFlowStatement import CashFlowStatement, CashFlowLine
-from Class.ReportContent.IncomeStatement import IncomeStatement, IncomeStatementLine
 
-def parse_number(val):
-    if val is None:
-        return None
-    s = str(val).strip()
-    if not s or s == "-":
-        return None
-    negative = s.startswith("(") and s.endswith(")")
-    if negative:
-        s = s[1:-1]
-    s = s.replace(" ", "")
-    if s.count(".") > 1 and "," not in s:
-        s = s.replace(".", "")
-    elif s.count(",") > 1 and "." not in s:
-        s = s.replace(",", "")
-    elif "," in s and "." in s:
-        if s.rfind(",") > s.rfind("."):
-            s = s.replace(".", "").replace(",", ".")
-        else:
-            s = s.replace(",", "")
-    try:
-        number = float(s)
-        return -number if negative else number
-    except ValueError:
-        return None
+KEYWORD_MAP = {
+    "doanh_thu": [r"net\s*revenue", r"total\s*revenue", r"sales"],
+    "loi_nhuan_sau_thue": [r"net\s*(?:income|profit)", r"profit\s*after\s*tax"],
+    "tong_tai_san": [r"total\s*assets"],
+    "von_chu_so_huu": [r"(?:owner'?s?\s*)?equity"],
+    "no_phai_tra": [r"total\s*liabilities", r"liabilities"],
+}
 
 def extract_financial_figures(text: str) -> dict:
-    data = {}
-    KEYWORD_MAP = {
-        "doanh_thu": [r"net\s*revenue", r"total\s*revenue", r"sales"],
-        "loi_nhuan_sau_thue": [r"net\s*(?:income|profit)", r"profit\s*after\s*tax"],
-        "tong_tai_san": [r"total\s*assets"],
-        "von_chu_so_huu": [r"(?:owner'?s?\s*)?equity"],
-        "no_phai_tra": [r"total\s*liabilities", r"liabilities"],
-    }
-    
+    data: Dict[str, float] = {}
     for field, patterns in KEYWORD_MAP.items():
         for pattern in patterns:
             match = re.search(pattern + r"[:\s]*([0-9][0-9.,\s]*)", text, re.IGNORECASE)
-            if match:
-                raw_num = match.group(1).replace(" ", "").replace(",", "")
-                if raw_num.count(".") > 1:
-                    raw_num = raw_num.replace(".", "")
-                try:
-                    data[field] = float(raw_num)
-                except ValueError:
-                    continue
-                break
+            if not match:
+                continue
+            raw_num = match.group(1).replace(" ", "").replace(",", "")
+            if raw_num.count(".") > 1:
+                raw_num = raw_num.replace(".", "")
+            try:
+                data[field] = float(raw_num)
+            except ValueError:
+                continue
+            break
     return data
 
-def parse_contents(toc_text: str, total_pages: int) -> dict:
-    found = {} 
-    CONTENTS_ENTRY_PATTERNS = [
-        ("BS", re.compile(r"(?:Balance\s+Sheet)[.\s…\-─_]*(\d+)", re.IGNORECASE)),
-        ("PL", re.compile(r"(?:Income\s+Statement)[.\s…\-─_]*(\d+)", re.IGNORECASE)),
-        ("CF", re.compile(r"(?:Cash\s+Flow)[.\s…\-─_]*(\d+)", re.IGNORECASE)),
-        ("NOTES", re.compile(r"(?:Notes\s+to)[.\s…\-─_]*(\d+)", re.IGNORECASE)),
-    ]
-    for key, pattern in CONTENTS_ENTRY_PATTERNS:
-        match = pattern.search(toc_text)
-        if match:
-            found[key] = int(match.group(1))
-
-    if not found:
-        return {}
-
-    sorted_entries = sorted(found.items(), key=lambda x: x[1])
-    ranges = {}
-    for i, (key, start_page) in enumerate(sorted_entries):
-        page_start = start_page - 1
-        if i + 1 < len(sorted_entries):
-            page_end = sorted_entries[i + 1][1] - 2  
-        else:
-            page_end = total_pages - 1
-
-        page_start = max(0, min(page_start, total_pages - 1))
-        page_end = max(page_start, min(page_end, total_pages - 1))
-        ranges[key] = (page_start, page_end)
-
-    return ranges
-
-def assign_page_ranges_by_markers(page_texts: list) -> dict:
-    found = []  
-    STATEMENT_MARKERS = [
-        ("BS", re.compile(r"(?:CONSOLIDATED\s+BALANCE\s+SHEET|BALANCE\s+SHEET)", re.IGNORECASE)),
-        ("PL", re.compile(r"(?:INCOME\s+STATEMENT|STATEMENT\s+OF\s+(?:COMPREHENSIVE\s+)?INCOME)", re.IGNORECASE)),
-        ("CF", re.compile(r"(?:CASH\s+FLOWS?\s+STATEMENT|STATEMENT\s+OF\s+CASH\s+FLOWS)", re.IGNORECASE)),
-        ("NOTES", re.compile(r"(?:NOTES\s+TO\s+THE\s+(?:CONSOLIDATED\s+)?FINANCIAL\s+STATEMENTS)", re.IGNORECASE)),
-    ]
-
-    for i, text in enumerate(page_texts):
-        for key, pattern in STATEMENT_MARKERS:
-            if pattern.search(text):
-                if not any(k == key for _, k in found):
-                    found.append((i, key))
-                break
- 
-    if not found:
-        return {}
- 
-    found.sort(key=lambda x: x[0])
-    total = len(page_texts)
-    ranges = {}
-    for i, (page_idx, key) in enumerate(found):
-        if i + 1 < len(found):
-            end = found[i + 1][0] - 1
-        else:
-            end = total - 1
-        ranges[key] = (page_idx, max(page_idx, end))
- 
-    return ranges
-
-def extract_balance_sheet_pages(file_path: str, page_start: int, page_end: int, year: int) -> BalanceSheet:
-    raw_bs = TableExtractor().extract_table(file_path, page_start, page_end, "BS")
-    bs = BalanceSheet(page_start=page_start, page_end=page_end, year=year)
-    bs.raw_data = raw_bs
- 
-    BS_CODE = {"tong_tai_san": ["270"], "no_phai_tra": ["300", "330"], "von_chu_so_huu": ["400", "410"]}
-
-    data = {}
-    for field, codes in BS_CODE.items():
-        for row in raw_bs:
-            code = str(row.get("Code", "")).strip()
-            if code not in codes:
+def normalize_ranges(raw: Any) -> Dict[str, Tuple[int, int]]:
+    out: Dict[str, Tuple[int, int]] = {}
+    if not isinstance(raw, dict):
+        return out
+    for key, value in raw.items():
+        if isinstance(value, (list, tuple)) and len(value) == 2:
+            try:
+                out[str(key)] = (int(value[0]), int(value[1]))
+            except (TypeError, ValueError):
                 continue
-            for col in ["period_current", "period_current", "accum_current"]:
-                if row.get(col) is not None:
-                    data[field] = row[col]
-                    break
-            if field in data:
-                break
+    return out
 
-    bs.tong_tai_san = data.get("tong_tai_san")
-    bs.no_phai_tra = data.get("no_phai_tra")
-    bs.von_chu_so_huu = data.get("von_chu_so_huu")
- 
-    sections = {}
-    current_part = None
-    lines = []
-    
-    for rec in raw_bs:
-        prefix = rec.get("Prefix")
-        if prefix in ["A", "B", "C", "D", "E"]:
-            if current_part and lines:
-                sections[current_part] = lines
-            current_part = prefix
-            lines = []
-        if rec.get("Items"):
-            lines.append(BalanceSheetLine(
-                prefix=prefix,
-                chi_tieu=rec.get("Items", ""),
-                ma_so=rec.get("Code"),
-                thuyet_minh=rec.get("Notes"),
-                so_cuoi_ky=rec.get("period_current"),
-                so_dau_nam=rec.get("period_prior"),
-            ))
-            
-    if current_part and lines:
-        sections[current_part] = lines
-    elif lines: 
-        sections["ALL"] = lines
-    bs.sections = sections
- 
-    return bs
+_INT64_MAX = 2 ** 63 - 1
 
-def extract_income_statement_pages(file_path: str, page_start: int, page_end: int, year: int, full_text: str) -> IncomeStatement:
-    raw_pl = TableExtractor().extract_table(file_path, page_start, page_end, "PL")
-    pl = IncomeStatement(page_start=page_start, page_end=page_end, year=year)
-    pl.raw_data = raw_pl
- 
-    line_items = []
-    for rec in raw_pl:
-        if rec.get("Items"):
-            line_items.append(IncomeStatementLine(
-                stt=rec.get("Prefix"),
-                chi_tieu=rec.get("Items", ""),
-                ma_so=rec.get("Code"),
-                thuyet_minh=rec.get("Notes"),
-                ky_nay=rec.get("period_current"),
-                ky_truoc=rec.get("period_prior"),
-                luy_ke_ky_nay=rec.get("accum_current"),
-                luy_ke_ky_truoc=rec.get("accum_prior"),
-            ))
-    pl.line_items = line_items
- 
-    PL_CODE = {"doanh_thu": ["01", "10"], "loi_nhuan_sau_thue": ["60", "62"]}
- 
-    data = {}
-    for field, codes in PL_CODE.items():
-        for row in raw_pl:
-            code = str(row.get("Code", "")).strip()
-            if code not in codes:
-                continue
-            for col in ["period_current", "period_current", "accum_current"]:
-                if row.get(col) is not None:
-                    data[field] = row[col]
-                    break
-            if field in data:
-                break
-
-    pl.doanh_thu = data.get("doanh_thu")
-    pl.loi_nhuan_sau_thue = data.get("loi_nhuan_sau_thue")
- 
-    kw = extract_financial_figures(full_text)
-    if pl.doanh_thu is None:
-        pl.doanh_thu = kw.get("doanh_thu")
-    if pl.loi_nhuan_sau_thue is None:
-        pl.loi_nhuan_sau_thue = kw.get("loi_nhuan_sau_thue")
- 
-    return pl
-
-def extract_cash_flow_pages(file_path: str, page_start: int, page_end: int, year: int) -> CashFlowStatement:
-    raw_cf = TableExtractor().extract_table(file_path, page_start, page_end, "CF")
-    cf = CashFlowStatement(page_start=page_start, page_end=page_end, year=year)
-    cf.raw_data = raw_cf
- 
-    sections = {}
-    current_section = None
-    lines = []
-    
-    for rec in raw_cf:
-        prefix = rec.get("Prefix")
-        if prefix and re.match(r'^[IVX]+$', prefix):
-            if current_section and lines:
-                sections[current_section] = lines
-            current_section = prefix
-            lines = []
-            
-        if rec.get("Items"):
-            lines.append(CashFlowLine(
-                prefix=prefix,
-                chi_tieu=rec.get("Items", ""),
-                ma_so=rec.get("Code"),
-                thuyet_minh=rec.get("Notes"),
-                luy_ke_ky_nay=rec.get("accum_current"),
-                luy_ke_ky_truoc=rec.get("accum_prior"),
-            ))
-            
-    if current_section and lines:
-        sections[current_section] = lines
-    elif lines:
-        sections["ALL"] = lines
-        
-    cf.sections = sections
- 
-    return cf
+def msgpack_safe(obj: Any) -> Any:
+    if isinstance(obj, dict):
+        return {k: msgpack_safe(v) for k, v in obj.items()}
+    if isinstance(obj, (list, tuple)):
+        return [msgpack_safe(v) for v in obj]
+    if isinstance(obj, bool):
+        return obj
+    if isinstance(obj, int):
+        return float(obj) if not (-_INT64_MAX - 1 <= obj <= _INT64_MAX) else obj
+    if isinstance(obj, float):
+        if obj != obj or obj in (float("inf"), float("-inf")):
+            return None
+    return obj
 
 def extraction_worker_node(state: FinancialReportState) -> dict:
-    file_path = state.get("file_path", "")
-    year = state.get("year", 2026)
-    symbol = state.get("symbol")
+    payload = dict(state or {})
+    file_path = payload.get("path") or payload.get("file_path") or ""
+    year = payload.get("year")
+    symbol = payload.get("symbol") or "UNKNOWN"
+    scope = payload.get("scope")
+    period_key = payload.get("period_key")
+    ranges = normalize_ranges(payload.get("ranges"))
 
-    result = {
-        "year": year,
-        "file_path": file_path,
+    result: Dict[str, Any] = {
+        "file_id": payload.get("file_id") or os.path.basename(file_path),
+        "source_file": payload.get("raw_filename") or os.path.basename(file_path),
         "symbol": symbol,
-        "origin": {
-            "source_file": os.path.basename(file_path),
-            "extraction_method": "page_based_toc",
-        },
-        "financial_data": {},
-        "balance_sheet": {},
-        "income_statement": [],
-        "cash_flow": {},
-        "notes": [],
+        "year": year,
+        "period_key": period_key,
+        "scope": scope,
+        "lang": payload.get("lang"),
+        "circular": payload.get("circular"),
+        "ranges": {k: list(v) for k, v in ranges.items()},
         "error": None,
+        "warnings": [],
     }
 
     bs_obj = pl_obj = cf_obj = notes_obj = None
+    keyword_figures: Dict[str, float] = {}
 
-    with pdfplumber.open(file_path) as reader:
-        total_pages = len(reader.pages)
-        result["origin"]["num_pages"] = total_pages
-        page_texts = [p.extract_text() or "" for p in reader.pages]
+    if not file_path or not ranges:
+        result["error"] = "missing file_path or ranges"
+    else:
+        extractor = TableExtractor()
+        try:
+            if "BS" in ranges:
+                bs_obj = extractor.extract_balance_sheet(file_path, ranges["BS"][0], ranges["BS"][1], year, scope, period_key)
+            if "IS" in ranges:
+                pl_obj = extractor.extract_income_statement(file_path, ranges["IS"][0], ranges["IS"][1], year, scope, period_key)
+            if "CF" in ranges:
+                cf_obj = extractor.extract_cash_flow(file_path, ranges["CF"][0], ranges["CF"][1], year, scope, period_key)
+            if "NOTES" in ranges:
+                notes_obj = FinancialNotesExtractor().extract_notes_structured(file_path, ranges["NOTES"][0], ranges["NOTES"][1], year, scope, period_key)
+            result["warnings"] = extractor.warnings[:20]
+        except Exception as exc:
+            result["error"] = f"{type(exc).__name__}: {exc}"
 
-        contents_idx = None
-        CONTENTS_PATTERN = re.compile(r"(?:TABLE\s+OF\s+CONTENTS|CONTENTS)", re.IGNORECASE)
-        for i in range(min(10, total_pages)):
-            if CONTENTS_PATTERN.search(page_texts[i]):
-                contents_idx = i
-                break
+    if bs_obj is None and pl_obj is None and cf_obj is None and file_path:
+        try:
+            with pdfplumber.open(file_path) as reader:
+                full_text = "\n".join((p.extract_text() or "") for p in reader.pages)
+            keyword_figures = extract_financial_figures(full_text)
+        except Exception as exc:
+            result["error"] = result.get("error") or f"{type(exc).__name__}: {exc}"
 
-        page_ranges = {}
-        if contents_idx is not None:
-            toc_text = page_texts[contents_idx]
-            if contents_idx + 1 < total_pages:
-                toc_text += "\n" + page_texts[contents_idx + 1]
-            page_ranges = parse_contents(toc_text, total_pages)
-            result["origin"]["extraction_method"] = "page_based_contents"
+    result["keyword_figures"] = keyword_figures
+    result["statement_counts"] = {
+        "balance_sheet_sections": len(bs_obj.sections) if bs_obj else 0,
+        "balance_sheet_rows": sum(len(v) for v in bs_obj.sections.values()) if bs_obj else 0,
+        "income_statement_rows": len(pl_obj.line_items) if pl_obj else 0,
+        "cash_flow_rows": sum(len(v) for v in cf_obj.sections.values()) if cf_obj else 0,
+        "notes_tables": len(notes_obj.table_metadata or {}) if notes_obj else 0,
+    }
 
-        if not page_ranges or len(page_ranges) < 2:
-            fallback_ranges = assign_page_ranges_by_markers(page_texts)
-            for k, v in fallback_ranges.items():
-                page_ranges.setdefault(k, v)
-            if not page_ranges:
-                result["origin"]["extraction_method"] = "page_based_markers"
-            elif contents_idx is None:
-                result["origin"]["extraction_method"] = "page_based_markers"
-            else:
-                result["origin"]["extraction_method"] = "page_based_contents+markers"
-
-        financial_data = {}
-
-        if "BS" in page_ranges:
-            ps, pe = page_ranges["BS"]
-            bs_obj = extract_balance_sheet_pages(file_path, ps, pe, year)
-            state['balance_data'].append(bs_obj)
-
-        if "PL" in page_ranges:
-            ps, pe = page_ranges["PL"]
-            full_text = "\n".join(page_texts)
-            pl_obj = extract_income_statement_pages(file_path, ps, pe, year, full_text)
-            state['income_data'].append(pl_obj)
-
-        if "CF" in page_ranges:
-            ps, pe = page_ranges["CF"]
-            cf_obj = extract_cash_flow_pages(file_path, ps, pe, year)
-            state['cash_data'].append(cf_obj)
-            
-        if "NOTES" in page_ranges:
-            ps, pe = page_ranges["NOTES"]
-            notes_obj = FinancialNotesExtractor().extract_notes_structured(file_path, ps, pe, year)
-            state['financial_data'].append(notes_obj)
-            
-        core_fields = {
-            "doanh_thu",
-            "loi_nhuan_sau_thue",
-            "tong_tai_san",
-            "von_chu_so_huu",
-            "no_phai_tra",
-        }
-        if not core_fields.issubset(financial_data.keys()):
-            full_text = "\n".join(page_texts)
-            kw_data = extract_financial_figures(full_text)
-            for key, value in kw_data.items():
-                financial_data.setdefault(key, value)
-
-    output = {"extracted_data": [result]}
-    if bs_obj:
-        output["balance_sheet_obj"] = bs_obj.model_dump()
-    if pl_obj:
-        output["income_statement_obj"] = pl_obj.model_dump()
-    if cf_obj:
-        output["cash_flow_obj"] = cf_obj.model_dump()
-    if notes_obj:
-        output["notes_obj"] = notes_obj.model_dump()
-
-    return output
+    out: Dict[str, Any] = {"extracted_data": [result]}
+    if bs_obj is not None:
+        out["balance_data"] = [bs_obj.model_dump()]
+    if pl_obj is not None:
+        out["income_data"] = [pl_obj.model_dump()]
+    if cf_obj is not None:
+        out["cash_data"] = [cf_obj.model_dump()]
+    if notes_obj is not None:
+        notes_dump = notes_obj.model_dump()
+        notes_dump["tables"] = notes_obj.get_all_tables()
+        out["financial_data"] = [notes_dump]
+    return msgpack_safe(out)

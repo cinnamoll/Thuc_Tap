@@ -4,6 +4,7 @@ from langchain_core.messages import HumanMessage
 from langchain_core.tools import tool
 from langgraph.types import interrupt
 from pydantic import ValidationError
+import pandas as pd
 
 from Class.AgentState import AgentState
 from Class.CleaningAction import CleaningAction, CleaningActionType
@@ -12,6 +13,7 @@ from Class.EngineeringAction import EngineeringAction, EncodingType, BinningType
 from Subgraph.cleaning import cleaning
 from Subgraph.eda import eda 
 from Subgraph.feature import feature_engineering
+from Subgraph.canonicalize import PERIOD_METRIC
 
 @tool
 def compute_impact_cleaning(action: CleaningAction, dataset_profile: dict) -> dict:
@@ -75,35 +77,88 @@ def get_valid_columns(state: AgentState) -> list:
     if dp_cols:
         return dp_cols
     file_path = state.get('file_path')
-    file_format = state.get('file_format', 'csv')
     if file_path:
         try:
-            from Subgraph.executor import get_lf
-            return list(get_lf(file_path, file_format).collect_schema().names())
+            return pd.read_csv(file_path).columns.tolist()
         except Exception:
             pass
     return []
 
-def check_identity(year, data: dict, symbol: str) -> Optional[dict]:
-    assets = data.get("tong_tai_san", 0.0)
-    liabilities = data.get("no_phai_tra", 0.0)
-    equity = data.get("von_chu_so_huu", 0.0)
+def check_identity(period_key, data: dict, symbol: str, scope: str = "") -> Optional[dict]:
+    assets = data.get("tong_tai_san", 0.0) or 0.0
+    liabilities = data.get("no_phai_tra", 0.0) or 0.0
+    equity = data.get("von_chu_so_huu", 0.0) or 0.0
 
-    if assets > 0 and (liabilities > 0 or equity > 0):
+    if assets and (liabilities or equity):
         diff = abs(assets - (liabilities + equity))
         if diff > 1e-2:
             return {
-                "year": year,
+                "period_key": str(period_key),
+                "scope": scope,
                 "symbol": symbol,
                 "flag_type": "identity_violation",
                 "field": "tong_tai_san",
                 "message": (
-                    f"Sai lệch bảng cân đối năm {year} của {symbol}: "
-                    f"Tài sản ({assets:.2f}) != Nợ PT + Vốn CSH ({liabilities + equity:.2f})"
+                    f"Sai lệch bảng cân đối {period_key} ({scope}) của {symbol}: "
+                    f"Tài sản ({assets:,.0f}) != Nợ PT + Vốn CSH ({liabilities + equity:,.0f}), "
+                    f"lệch {diff:,.0f}"
                 ),
                 "severity": "HIGH",
             }
     return None
+
+def compute_identity_flags(df) -> list:
+    flags: list = []
+    required = {"line_item_canonical", "value", "report_type", "metric"}
+    if not required.issubset(set(df.columns)):
+        return flags
+
+    bs = df[(df["report_type"] == "balance_sheet")
+            & (df["metric"] == PERIOD_METRIC["balance_sheet"])
+            & df["line_item_canonical"].notna()]
+    if bs.empty:
+        return flags
+
+    scope_col = "scope" if "scope" in df.columns else None
+    period_col = "period" if "period" in df.columns else "period_key"
+    group_keys = [scope_col, period_col] if scope_col else [period_col]
+
+    for key, part in bs.groupby(group_keys, dropna=False):
+        scope, period_key = (key if scope_col else ("", key))
+        vals = {}
+        for _, row in part.iterrows():
+            try:
+                vals.setdefault(row["line_item_canonical"], float(row["value"]))
+            except (TypeError, ValueError):
+                continue
+
+        cur = vals.get("tai_san_ngan_han")
+        noncur = vals.get("tai_san_dai_han")
+        total_assets = vals.get("tong_tai_san")
+        if cur is not None and noncur is not None and total_assets is not None:
+            diff = abs(total_assets - (cur + noncur))
+            if diff > 1.0:
+                flags.append({
+                    "period_key": str(period_key), "scope": str(scope or ""),
+                    "flag_type": "identity_violation", "field": "tong_tai_san", "severity": "HIGH",
+                    "message": (f"{period_key}/{scope}: Tổng tài sản ({total_assets:,.0f}) != "
+                                f"TS ngắn hạn + TS dài hạn ({cur + noncur:,.0f}), lệch {diff:,.0f}"),
+                })
+
+        liab = vals.get("no_phai_tra")
+        equity = vals.get("von_chu_so_huu")
+        total = vals.get("tong_nguon_von")
+        if liab is not None and equity is not None and total is not None:
+            diff = abs(total - (liab + equity))
+            if diff > 1.0:
+                flags.append({
+                    "period_key": str(period_key), "scope": str(scope or ""),
+                    "flag_type": "identity_violation", "field": "tong_nguon_von", "severity": "HIGH",
+                    "message": (f"{period_key}/{scope}: Tổng nguồn vốn ({total:,.0f}) != "
+                                f"Nợ phải trả + Vốn CSH ({liab + equity:,.0f}), lệch {diff:,.0f}"),
+                })
+
+    return flags
 
 def compute_impact_node(state: AgentState) -> dict:
     dataset_profile = state.get('dataset_profile', {})
@@ -164,34 +219,30 @@ def validator_node(state: AgentState) -> dict:
             continue
 
         if valid_cols and action.column and action.column not in valid_cols:
-            return {
-                "validation": False,
-                "validation_error": f"Column '{action.column}' does not exist in dataset. Valid columns: {valid_cols}"
-            }
+            return {"validation": False, "validation_error": f"Column '{action.column}' does not exist in dataset. Valid columns: {valid_cols}"}
 
         computed = next((c for c in computed_list if c["column"] == action.column and c["actionType"] == action.actionType), {})
 
         if action.rows_affected != computed.get("rows_affected", 0):
-            return {
-                "validation": False, 
-                "validation_error": f"LLM reported {action.rows_affected} but system computed {computed.get('rows_affected', 0)} rows affected for {action.column}."
-            }
+            return {"validation": False,  "validation_error": f"LLM reported {action.rows_affected} but system computed {computed.get('rows_affected', 0)} rows affected for {action.column}."}
 
     harmonized = state.get("harmonized_dataset", [])
     acct_flags = list(state.get("validation_flags") or [])
     if harmonized and isinstance(harmonized, list):
         from collections import defaultdict
+        from Subgraph.canonicalize import PERIOD_METRIC
         grouped = defaultdict(dict)
         for row in harmonized:
-            sym = row.get("symbol")
-            yr = row.get("year")
-            key = row.get("line_item_canonical")
-            val = row.get("value", 0.0)
-            if sym and yr and key:
-                grouped[(sym, yr)][key] = val
-                
-        for (sym, yr), data in grouped.items():
-            flag = check_identity(yr, data, sym)
+            if PERIOD_METRIC.get(row.get("report_type")) != row.get("metric"):
+                continue
+            canon = row.get("line_item_canonical")
+            val = row.get("value")
+            if canon is None or val is None:
+                continue
+            grouped[(row.get("symbol"), row.get("scope"), row.get("period_key"))][canon] = val
+
+        for (sym, scope, period_key), data in grouped.items():
+            flag = check_identity(period_key, data, sym, scope)
             if flag:
                 acct_flags.append(flag)
 
@@ -296,12 +347,6 @@ def deterministic_fallback_node(state: AgentState):
         if state['action_type'] == 'engineering':
             res += f"Dataset preview: {state.get('preview_feature')}"
     return {"messages": [HumanMessage(content=res)], "fallback_used": True} 
-
-# def route_after_propose(state):
-#     pending = state.get("pending_insight", []) 
-#     if isinstance(pending, list) and len(pending) > 0: 
-#         return "validator" 
-#     return "compute_impact" 
 
 def route_after_validator(state: AgentState) -> Literal["human_review", "repair", "__end__"]:
     if state.get("validation"):
@@ -418,7 +463,3 @@ validate_graph.add_edge("feature_graph", "compute_impact")
 validate_graph.add_edge("eda_graph", "compute_impact")  
 
 validation = validate_graph.compile()
-
-# img = validation.get_graph().draw_mermaid_png()
-# with open('Subgraph_Img/validator_image.png', 'wb') as f:
-#     f.write(img)

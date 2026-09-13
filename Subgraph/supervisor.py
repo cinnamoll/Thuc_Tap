@@ -10,7 +10,6 @@ from datetime import datetime
 from Class.AgentState import AgentState
 
 load_dotenv()
-
 llm = ChatDeepSeek(model="deepseek-v4-flash")
 
 class RouteDecision(TypedDict):
@@ -42,6 +41,15 @@ def supervisor_core(state: AgentState):
     run_id = state.get('run_id', '') 
     if run_id == "": 
         run_id = f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:6]}" 
+
+    if state.get("analysis_mode") != "agent":
+        return Command(
+            goto="ratio_trend_engine",
+            update={
+                "run_id": run_id,
+                "messages": [HumanMessage(content="[Supervisor] -> ratio_trend_engine (chế độ tất định)")],
+            },
+        )
 
     if not state.get("cleaning_done"):
         goto = "cleaning"

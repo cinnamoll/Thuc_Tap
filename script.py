@@ -1,33 +1,79 @@
-from dotenv import load_dotenv
-from langgraph.graph import StateGraph, START, END
-from langgraph.checkpoint.memory import InMemorySaver
-from langgraph.types import Command
-import uuid
+"""script.py
+
+Pipeline LangGraph: nhiều PDF báo cáo tài chính -> MỘT báo cáo phân tích đa kỳ.
+
+Luồng (``analysis_mode="deterministic"`` - mặc định, KHÔNG gọi LLM ở bước phân tích)::
+
+    START
+     -> generate_batch_id
+     -> index_files            đọc NỘI DUNG: symbol / kỳ / scope / lang / form / circular
+     -> select_files           gom theo kỳ, ưu tiên bản HỢP NHẤT
+     -> [Send] extraction_worker   song song, 1 worker cho 1 tệp
+     -> schema_harmonizer      bảng long-format theo column contract
+     -> materialize_dataset    ghi harmonized.csv + bridge state cho bộ agent
+     -> canonicalize_metrics   mã VAS -> field chuẩn; {scope: {kỳ: {field: value}}}
+     -> run_accounting_checks  đẳng thức BS / IS / CF
+     -> cross_check_scope      đối chiếu bản riêng vs hợp nhất
+     -> supervisor
+          |-- deterministic -> ratio_trend_engine
+          `-- agent         -> cleaning|eda|feature_engineering
+                              -> validation -> executor -> review -> supervisor
+     -> ratio_trend_engine     chỉ số + QoQ / YoY / CAGR THEO KỲ
+     -> generate_report
+     -> review_report          HITL: approve / retry / abort
+     -> build_report           example_output/<batch>/Bao_Cao_<batch>.md
+     -> END
+
+LƯU Ý về wiring: KHÔNG thêm static edge từ ``supervisor``/``review_report`` tới các
+nhánh của chúng. Đã kiểm chứng bằng test LangGraph độc lập rằng khi một node vừa
+có static edge vừa trả ``Command(goto=...)`` thì **tất cả** các nhánh cùng chạy.
+"""
+
 import json
+import uuid
+
+from dotenv import load_dotenv
+from langgraph.checkpoint.memory import InMemorySaver
+from langgraph.graph import END, START, StateGraph
+from langgraph.types import Command, Send
 
 from Class.FinancialState import FinancialReportState
 
-from Subgraph.dispatcher import generate_batch_id, pdf_dispatcher, route_to_extraction_workers
-from Subgraph.extraction import extraction_worker_node
-from Subgraph.harmonizer import schema_harmonizer
-from Subgraph.ratio_trend import ratio_trend_engine
-from Subgraph.reporting import generate_report_node, build_report_node
-
-from Subgraph.supervisor import supervisor_core, route_after_validation, route_after_review
+from Subgraph.accounting_checks import run_accounting_checks
+from Subgraph.canonicalize import canonicalize_metrics
 from Subgraph.cleaning import cleaning
+from Subgraph.cross_check import cross_check_scope
 from Subgraph.eda import eda
-from Subgraph.feature import feature_engineering
-from Subgraph.validator import validation
 from Subgraph.executor import executor_node, review_execution_node
+from Subgraph.extraction import extraction_worker_node
+from Subgraph.feature import feature_engineering
+from Subgraph.harmonizer import schema_harmonizer
+from Subgraph.indexing import build_batch, index_files, select_files
+from Subgraph.materialize import materialize_dataset
+from Subgraph.ratio_trend import ratio_trend_engine
+from Subgraph.reporting import build_report_node, generate_report_node, review_report_node, route_after_report_review
+from Subgraph.supervisor import route_after_review, route_after_validation, supervisor_core
+from Subgraph.validator import validation
 
 load_dotenv()
 
+def route_to_extraction_workers(state: FinancialReportState) -> list:
+    plan = state.get("extraction_plan") or []
+    return [Send("extraction_worker", item) for item in plan]
+
 graph = StateGraph(FinancialReportState)
 
-graph.add_node("generate_batch_id", generate_batch_id)
-graph.add_node("pdf_dispatcher", pdf_dispatcher)
+graph.add_node("generate_batch_id", build_batch)
+graph.add_node("index_files", index_files)
+graph.add_node("select_files", select_files)
 graph.add_node("extraction_worker", extraction_worker_node)
+
 graph.add_node("schema_harmonizer", schema_harmonizer)
+graph.add_node("materialize_dataset", materialize_dataset)
+graph.add_node("canonicalize_metrics", canonicalize_metrics)
+
+graph.add_node("run_accounting_checks", run_accounting_checks)
+graph.add_node("cross_check_scope", cross_check_scope)
 
 graph.add_node("supervisor", supervisor_core)
 graph.add_node("cleaning", cleaning)
@@ -39,93 +85,94 @@ graph.add_node("review", review_execution_node)
 
 graph.add_node("ratio_trend_engine", ratio_trend_engine)
 graph.add_node("generate_report", generate_report_node)
+graph.add_node("review_report", review_report_node)
 graph.add_node("build_report", build_report_node)
 
 graph.add_edge(START, "generate_batch_id")
-graph.add_edge("generate_batch_id", "pdf_dispatcher")
-
-graph.add_conditional_edges(
-    "pdf_dispatcher",
-    route_to_extraction_workers,
-    ["extraction_worker"],
-)
-
+graph.add_edge("generate_batch_id", "index_files")
+graph.add_edge("index_files", "select_files")
+graph.add_conditional_edges("select_files", route_to_extraction_workers, ["extraction_worker"])
 graph.add_edge("extraction_worker", "schema_harmonizer")
-graph.add_edge("schema_harmonizer", "supervisor")
-graph.add_edge('supervisor', 'cleaning')
-graph.add_edge('supervisor', 'eda')
-graph.add_edge('supervisor', 'feature_engineering')
+graph.add_edge("schema_harmonizer", "materialize_dataset")
+graph.add_edge("materialize_dataset", "canonicalize_metrics")
+graph.add_edge("canonicalize_metrics", "run_accounting_checks")
+graph.add_edge("run_accounting_checks", "cross_check_scope")
+graph.add_edge("cross_check_scope", "supervisor")
+
 graph.add_edge("cleaning", "validation")
 graph.add_edge("eda", "validation")
 graph.add_edge("feature_engineering", "validation")
-
 graph.add_conditional_edges(
     "validation",
     route_after_validation,
     {
-        "executor": "executor",
-        "supervisor": "supervisor",
-    },
+        "executor": "executor", 
+        "supervisor": "supervisor"
+    }
 )
-
 graph.add_edge("executor", "review")
-
 graph.add_conditional_edges(
     "review",
     route_after_review,
     {
-        "executor": "executor",
-        "validation": "validation",
-        "supervisor": "supervisor",
-    },
+        "executor": "executor", 
+        "validation": "validation", 
+        "supervisor": "supervisor"
+    }
 )
 
-graph.add_edge('review', 'ratio_trend_engine')
 graph.add_edge("ratio_trend_engine", "generate_report")
-graph.add_edge("generate_report", "build_report")
+graph.add_edge("generate_report", "review_report")
+graph.add_conditional_edges(
+    "review_report",
+    route_after_report_review,
+    {
+        "build_report": "build_report", 
+        "generate_report": "generate_report", 
+        "end": END
+    }
+)
 graph.add_edge("build_report", END)
 
 checkpointer = InMemorySaver()
 app = graph.compile(checkpointer=checkpointer)
 
-# img = app.get_graph().draw_mermaid_png()
-# with open('graph_image.png', 'wb') as f:
-#     f.write(img)
-
 if __name__ == "__main__":
     thread_config = {"configurable": {"thread_id": str(uuid.uuid4())}}
     print("  Batch PDF Financial Report Pipeline")
+    print(f"  nodes: {sorted(graph.nodes)}")
+
     def handle_stream(input_data):
         for event in app.stream(input_data, config=thread_config):
             for node_name, node_state in event.items():
                 if node_name == "__interrupt__":
-                    print("\nWorkflow Interrupted for Human Input")
+                    print("\nWorkflow Interrupted")
                     continue
                 print(f"\n Output from {node_name}")
                 if isinstance(node_state, dict):
-                    msgs = node_state.get('messages', [])  
-                    if msgs: 
-                        last_message = msgs[-1] 
-                        content = getattr(last_message, 'content', None)
-                        print(content if content else "[Tool Call / Output]") 
-                    else: 
+                    msgs = node_state.get("messages", [])
+                    if msgs:
+                        last_message = msgs[-1]
+                        content = getattr(last_message, "content", None)
+                        print(content if content else "[Tool Call / Output]")
+                    else:
                         print(f"[{node_name}] Executed")
 
     while True:
         state_snapshot = app.get_state(thread_config)
-        
+
         if state_snapshot.next and any(task.interrupts for task in state_snapshot.tasks):
             task = next(t for t in state_snapshot.tasks if t.interrupts)
             interrupt_val = task.interrupts[0].value
-            
+
             print("\nINTERRUPT REQUIRED")
             if isinstance(interrupt_val, dict):
                 print(json.dumps(interrupt_val, indent=2, ensure_ascii=False))
             else:
                 print(f"Payload: {interrupt_val}")
-            
+
             req_type = interrupt_val.get("type", "") if isinstance(interrupt_val, dict) else ""
-            
+
             if req_type == "human_review_request":
                 ans = input("Approve this action? (approve/reject or y/n): ").strip().lower()
                 is_approved = ans in ["approve", "approved", "accept", "accepted", "y", "yes", "1"] or ans.startswith("y")
@@ -136,7 +183,7 @@ if __name__ == "__main__":
                     ans_choice = "approve"
                 elif ans in ["n", "no", "reject", "rejected", "0"]:
                     ans_choice = "reject"
-                elif ans in ["edit"]:
+                elif ans == "edit":
                     ans_choice = "edit"
                 else:
                     ans_choice = "approve"
@@ -161,11 +208,9 @@ if __name__ == "__main__":
             handle_stream(Command(resume=decision))
         else:
             user_input = input("\nEnter PDF file paths (comma-separated) or 'exit': ").strip()
-            if user_input.lower() == 'exit':
+            if user_input.lower() == "exit":
                 break
             if not user_input:
                 continue
-            
-            # Parse input: comma-separated file paths
             input_files = [f.strip() for f in user_input.split(",") if f.strip()]
-            handle_stream({"input_files": input_files})
+            handle_stream({"input_files": input_files, "analysis_mode": "deterministic"})

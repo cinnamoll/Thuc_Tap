@@ -12,19 +12,7 @@ from Class.AgentState import AgentState
 from Class.EngineeringAction import EngineeringAction, EncodingType, BinningType, FinancialFeatureType
 
 load_dotenv()
-
 llm = ChatDeepSeek(model="deepseek-v4-flash")
-
-def read_df(file_path: str, file_format: str) -> pd.DataFrame:
-    if file_format == "csv":
-        df = pd.read_csv(file_path)
-    elif file_format == "parquet":
-        df = pd.read_parquet(file_path)
-    elif file_format == "json":
-        df = pd.read_json(file_path, lines=True)
-    else:
-        raise ValueError(f"Don't support {file_format}")
-    return df
 
 @tool 
 def preview_encoding_tool(file_path: str, file_format: str, column: str, encode: EncodingType, tool_call_id: Annotated[str, InjectedToolCallId], length: int=20) -> str:
@@ -38,15 +26,13 @@ def preview_encoding_tool(file_path: str, file_format: str, column: str, encode:
 
     Returns:
         - new Encoded column head
-    """
-    
-    df = read_df(file_path, file_format)
-
+    """    
+    df = pd.read_csv(file_path)
     if column not in df.columns:
         return f"'{column}' not found in dataset."
 
     dtype = df[column].dtype
-    if pd.api.types.is_numeric_dtype(dtype) and not pd.api.types.is_categorical_dtype(dtype):
+    if pd.api.types.is_numeric_dtype(dtype) and not isinstance(dtype, pd.CategoricalDtype):
         return f"'{column}' is not a nominal/categorical type (dtype={dtype})"
     
     df = df[[column]].head(length).copy()
@@ -75,13 +61,10 @@ def preview_encoding_tool(file_path: str, file_format: str, column: str, encode:
         f"First {length} rows": encoded_df.to_string(index=False)
     }
     
-    return Command(update={
-        "preview_feature": res,
-        "messages": [ToolMessage(content="Encoding complete " + str(res), tool_call_id=tool_call_id)]
-    })
+    return Command(update={"preview_feature": res, "messages": [ToolMessage(content="Encoding complete " + str(res), tool_call_id=tool_call_id)]})
 
 @tool
-def preview_binning_standard_tool(file_path: str, file_format: str, column: str, encode: BinningType, tool_call_id: Annotated[str, InjectedToolCallId], n_bin: int=10, length: int=20) -> str:
+def preview_binning_standard_tool(file_path: str, column: str, encode: BinningType, tool_call_id: Annotated[str, InjectedToolCallId], n_bin: int=10, length: int=20) -> str:
     """
     Apply this tool only to continuos data columns to binned / standardized:
         - Use result from univariate_analyst_ as input to suggest encoding plans
@@ -97,8 +80,7 @@ def preview_binning_standard_tool(file_path: str, file_format: str, column: str,
         - A new Binned column head
     """
     
-    df = read_df(file_path, file_format)
-
+    df = pd.read_csv(file_path)
     if column not in df.columns:
         return f"'{column}' not found in dataset."
 
@@ -132,13 +114,10 @@ def preview_binning_standard_tool(file_path: str, file_format: str, column: str,
     
     res = {"Target Column": column, "Method": encode, f"First {length} rows": new_df.to_string(index=False)}
     
-    return Command(update={
-        "preview_feature": res,
-        "messages": [ToolMessage(content="Binning/Standardize complete " + str(res), tool_call_id=tool_call_id)]
-    })
+    return Command(update={"preview_feature": res, "messages": [ToolMessage(content="Binning/Standardize complete " + str(res), tool_call_id=tool_call_id)]})
 
 @tool 
-def preview_growth_rate_tool(file_path: str, file_format: str, column: str, group_by: str, time_col: str, tool_call_id: Annotated[str, InjectedToolCallId], length: int = 20) -> str:
+def preview_growth_rate_tool(file_path: str, column: str, group_by: str, time_col: str, tool_call_id: Annotated[str, InjectedToolCallId], length: int = 20) -> str:
     """
     Preview YoY/QoQ growth rate computation for a numeric column grouped by line items.
 
@@ -152,7 +131,7 @@ def preview_growth_rate_tool(file_path: str, file_format: str, column: str, grou
     Returns:
         Preview of growth rate computation
     """
-    df = read_df(file_path, file_format)
+    df = pd.read_csv(file_path)
     for c in [column, group_by, time_col]:
         if c not in df.columns:
             return f"'{c}' not found in dataset."
@@ -165,7 +144,7 @@ def preview_growth_rate_tool(file_path: str, file_format: str, column: str, grou
     return Command(update={"preview_feature": res, "messages": [ToolMessage(content="Growth rate preview: " + str(res), tool_call_id=tool_call_id)]})
 
 @tool
-def preview_lag_feature_tool(file_path: str, file_format: str, column: str, group_by: str, time_col: str, tool_call_id: Annotated[str, InjectedToolCallId], length: int = 20) -> str:
+def preview_lag_feature_tool(file_path: str, column: str, group_by: str, time_col: str, tool_call_id: Annotated[str, InjectedToolCallId], length: int = 20) -> str:
     """
     Preview lag feature (previous period value) for a column grouped by line items.
 
@@ -179,7 +158,7 @@ def preview_lag_feature_tool(file_path: str, file_format: str, column: str, grou
     Returns:
         Preview of lag feature
     """
-    df = read_df(file_path, file_format)
+    df = pd.read_csv(file_path)
     for c in [column, group_by, time_col]:
         if c not in df.columns:
             return f"'{c}' not found in dataset."
@@ -192,7 +171,7 @@ def preview_lag_feature_tool(file_path: str, file_format: str, column: str, grou
     return Command(update={"preview_feature": res, "messages": [ToolMessage(content="Lag feature preview: " + str(res), tool_call_id=tool_call_id)]})
 
 @tool
-def preview_common_size_tool(file_path: str, file_format: str, column: str, group_by: str, base_item: str, time_col: str, tool_call_id: Annotated[str, InjectedToolCallId], length: int = 20) -> str:
+def preview_common_size_tool(file_path: str, column: str, group_by: str, base_item: str, time_col: str, tool_call_id: Annotated[str, InjectedToolCallId], length: int = 20) -> str:
     """
     Preview common-size transformation: express each value as % of a base item per period.
 
@@ -207,7 +186,7 @@ def preview_common_size_tool(file_path: str, file_format: str, column: str, grou
     Returns:
         Preview of common-size percentages
     """
-    df = read_df(file_path, file_format)
+    df = pd.read_csv(file_path)
     for c in [column, group_by, time_col]:
         if c not in df.columns:
             return f"'{c}' not found in dataset."
@@ -226,7 +205,7 @@ def preview_common_size_tool(file_path: str, file_format: str, column: str, grou
     return Command(update={"preview_feature": res, "messages": [ToolMessage(content="Common-size preview: " + str(res), tool_call_id=tool_call_id)]})
 
 @tool
-def preview_cross_statement_join_tool(file_path: str, file_format: str, join_key: str, tool_call_id: Annotated[str, InjectedToolCallId], length: int = 20) -> str:
+def preview_cross_statement_join_tool(file_path: str, join_key: str, tool_call_id: Annotated[str, InjectedToolCallId], length: int = 20) -> str:
     """
     Preview cross-statement join readiness. Shows how data would be structured after joining
     BS+IS+CF by period key.
@@ -239,7 +218,7 @@ def preview_cross_statement_join_tool(file_path: str, file_format: str, join_key
     Returns:
         Preview of join structure
     """
-    df = read_df(file_path, file_format)
+    df = pd.read_csv(file_path)
     if join_key not in df.columns:
         return f"'{join_key}' not found in dataset."
 
@@ -272,7 +251,7 @@ def propose_action_node(state: AgentState) -> AgentState:
     valid_cols = dataset_profile.get('columns', [])
     if not valid_cols and file_path:
         try:
-            valid_cols = read_df(file_path, file_format).columns.tolist()
+            valid_cols = pd.read_csv(file_path).columns.tolist()
         except Exception:
             valid_cols = []
 
@@ -374,7 +353,3 @@ feature_graph.add_conditional_edges(
 feature_graph.add_edge("feature_tools", "feature_agent")
 
 feature_engineering = feature_graph.compile()
-
-# img = feature_engineering.get_graph().draw_mermaid_png()
-# with open('Subgraph_Img/feature_image.png', 'wb') as f:
-#     f.write(img)

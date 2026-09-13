@@ -4,22 +4,9 @@ from operator import add as add_messages
 import operator
 
 from Class.CleaningAction import CleaningAction
-from Class.EDAInsight import EDAInsight
+from Class.EDAInsight import EDAInsight, dedupe_list
 from Class.EngineeringAction import EngineeringAction
 from Class.Report import Report
-
-def dedupe_list(left: Optional[List[str]], right: Optional[List[str]]) -> List[str]:
-    if left is None:
-        return list(right or [])
-    if right is None:
-        return list(left)
-    seen = set()
-    result = []
-    for item in list(left) + list(right):
-        if item not in seen:
-            seen.add(item)
-            result.append(item)
-    return result
 
 class AgentState(TypedDict):
     messages: Annotated[Sequence[BaseMessage], add_messages]
@@ -63,5 +50,5 @@ class AgentState(TypedDict):
     pending_question: Optional[str]
     output_path: Optional[str]
 
-    harmonized_dataset: Dict[str, Any]
+    harmonized_dataset: List[Dict[str, Any]]
     validation_flags: List[Dict[str, Any]]

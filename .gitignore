@@ -13,3 +13,8 @@ notes_output.md
 functions.md
 .claude
 raw_data.md
+.agents
+txt
+example_output/
+*_eda_output.png
+.pytest_cache

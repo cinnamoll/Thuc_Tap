@@ -7,33 +7,21 @@ from langchain_core.tools import tool, InjectedToolCallId
 from langgraph.prebuilt import ToolNode 
 import pandas as pd
 from langgraph.types import Command
+
 from Class.AgentState import AgentState
 from Class.CleaningAction import CleaningAction, CleaningActionType
 
 load_dotenv()
-
 llm = ChatDeepSeek(model="deepseek-v4-flash")
 
-def read_df(file_path: str, file_format: str) -> pd.DataFrame:
-    if file_format == "csv":
-        df = pd.read_csv(file_path)
-    elif file_format == "parquet":
-        df = pd.read_parquet(file_path)
-    elif file_format == "json":
-        df = pd.read_json(file_path, lines=True)
-    else:
-        raise ValueError(f"Don't support {file_format}")
-    return df
-
 @tool
-def profile_dataset(file_path: str, file_format: str, tool_call_id: Annotated[str, InjectedToolCallId]) -> dict:
+def profile_dataset(file_path: str, tool_call_id: Annotated[str, InjectedToolCallId]) -> dict:
     """
     Read a dataset and return statistics:
     dtypes, number of nulls for both numerical and categorical columns and unique values for categorical column.
     Used to detect problems before suggesting cleaning.
     """
-    df = read_df(file_path, file_format)
-
+    df = pd.read_csv(file_path)
     stats = {}
     for col in df.columns:
         stats[f"{col}_nulls"] = int(df[col].isnull().sum())
@@ -46,10 +34,7 @@ def profile_dataset(file_path: str, file_format: str, tool_call_id: Annotated[st
         "n_rows": len(df)
     }
 
-    return Command(update={
-        "dataset_profile": res,
-        "messages": [ToolMessage(content=str(res), tool_call_id=tool_call_id)] 
-    })
+    return Command(update={"dataset_profile": res, "messages": [ToolMessage(content=str(res), tool_call_id=tool_call_id)]})
 
 cleaning_tools = [profile_dataset]
 tool_node = ToolNode(cleaning_tools)
@@ -71,7 +56,7 @@ def propose_action_node(state: AgentState) -> AgentState:
     
     if not valid_cols and file_path:
         try:
-            valid_cols = read_df(file_path, file_format).columns.tolist()
+            valid_cols = pd.read_csv(file_path).columns.tolist()
         except Exception:
             valid_cols = []
 
@@ -125,10 +110,7 @@ def propose_action_node(state: AgentState) -> AgentState:
     if res.actionType == CleaningActionType.NONE:
         return Command(update={"cleaning_done": True})
 
-    return Command(update={
-        "pending_cleaning": existing_actions + [res],
-        "messages": [HumanMessage(content=summary)]
-    })
+    return Command(update={"pending_cleaning": existing_actions + [res], "messages": [HumanMessage(content=summary)]})
 
 def route_tool_or_finish(state) -> Literal["cleaning_tools", "propose_action"]: 
     last_msg = state["messages"][-1]
@@ -166,7 +148,3 @@ cleaning_graph.add_conditional_edges(
 cleaning_graph.add_edge("cleaning_tools", "cleaning_agent")
 
 cleaning = cleaning_graph.compile()
-
-# img = cleaning.get_graph().draw_mermaid_png()
-# with open('Subgraph_Img/cleaning_image.png', 'wb') as f:
-#     f.write(img)

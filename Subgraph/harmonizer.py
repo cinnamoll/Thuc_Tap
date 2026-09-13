@@ -1,8 +1,9 @@
 import re
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 from Class.FinancialState import FinancialReportState
 from Class.NotesExtraction.FinancialNotes import FinancialNotesExtractor
+from Subgraph.canonicalize import canonical_name
 
 def is_valid_value(val: Any) -> bool:
     if val is None:
@@ -18,13 +19,10 @@ def parse_value(val: Any) -> float:
         return 0.0
     try:
         return float(val)
-    except ValueError:
+    except (TypeError, ValueError):
         return 0.0
 
 def is_numeric_literal(val: Any) -> bool:
-    """Only true for actual numbers / numeric strings (with separators,
-    parentheses-negative, or percent). Excludes narrative cells such as
-    'Historical cost' or 'Dec. 31, 2025'."""
     if isinstance(val, (int, float)):
         return True
     if not isinstance(val, str):
@@ -32,181 +30,148 @@ def is_numeric_literal(val: Any) -> bool:
     s = val.strip()
     if not s:
         return False
-    s = s.rstrip("%")
-    if s.startswith("(") and s.endswith(")"):
-        s = s[1:-1]
-    s = s.replace(",", "").replace(".", "").replace(" ", "").replace("\u00a0", "")
-    cleaned = re.sub(r"[()%,.\- ]", "", val)
-    return cleaned.isdigit()
+    return re.sub(r"[()%,.\-\s\u00a0]", "", s).isdigit()
+
+NOTE_LABEL_KEYS = {"Items", "chi_tieu", "Code", "ma_so", "Notes", "notes", "thuyet_minh", "Prefix", "prefix", "title"}
+
+def row_data(meta: Dict[str, Any], *, statement_type: str, report_type: str, label: str,
+         code: Optional[str], metric: str, value: float, source_page: Any,
+         note_id: Optional[str] = None, note_title: Optional[str] = None,
+         note_type: Optional[str] = None) -> Dict[str, Any]:
+    year = meta.get("year")
+    period_key = meta.get("period_key")
+    return {
+        "batch_id": meta.get("batch_id"),
+        "source_file": meta.get("source_file"),
+        "symbol": meta.get("symbol"),
+        "scope": meta.get("scope"),
+        "lang": meta.get("lang"),
+        "statement_type": statement_type,
+        "report_type": report_type,
+        "period_key": period_key,
+        "period": period_key,
+        "fiscal_year": year,
+        "year": year,
+        "note_id": note_id,
+        "note_title": note_title,
+        "note_type": note_type,
+        "row_label": label,
+        "code": code,
+        "line_item_canonical": canonical_name(report_type, code, label),
+        "metric": metric,
+        "value": value,
+        "source_page": source_page,
+    }
+
+def meta_index(state: FinancialReportState) -> Dict[Any, Dict[str, Any]]:
+    idx: Dict[Any, Dict[str, Any]] = {}
+    for item in state.get("extracted_data") or []:
+        if isinstance(item, dict):
+            idx[(item.get("scope"), item.get("period_key"))] = item
+    return idx
 
 def schema_harmonizer(state: FinancialReportState) -> dict:
-    numeric_df: List[Dict[str, Any]] = []
+    rows: List[Dict[str, Any]] = []
     narrative_store: List[Dict[str, Any]] = []
 
     batch_id = state.get("batch_id", "UNKNOWN")
-    
-    balance_data = state.get("balance_data", [])
-    for bs in balance_data:
-        year = bs.year
-        page = bs.page_start
-        for sec_name, lines in bs.sections.items():
-            for line in lines:
-                row_label = line.chi_tieu
-                code = line.ma_so
-                note_id = line.thuyet_minh
+    meta_idx = meta_index(state)
 
-                metrics = [("so_cuoi_ky", "current_year"), ("so_dau_nam", "prior_year")]
-                for attr, metric_name in metrics:
-                    val = getattr(line, attr, None)
+    def meta_for(scope, period_key, period_year=None, source_file=None):
+        meta = dict(meta_idx.get((scope, period_key)) or {})
+        meta.setdefault("batch_id", batch_id)
+        meta.setdefault("scope", scope)
+        meta.setdefault("period_key", period_key)
+        meta.setdefault("year", period_year)
+        meta.setdefault("source_file", source_file)
+        meta.setdefault("symbol", state.get("symbol"))
+        return meta
+
+    for bs in state.get("balance_data") or []:
+        meta = meta_for(bs.get("scope"), bs.get("period_key"), bs.get("year"))
+        for section, lines in (bs.get("sections") or {}).items():
+            for line in lines or []:
+                for attr in ("so_cuoi_ky", "so_dau_nam"):
+                    val = line.get(attr)
                     if is_valid_value(val):
-                        numeric_df.append({
-                            "report_type": "balance_sheet",
-                            "note_id": note_id,
-                            "note_title": None,
-                            "note_type": None,
-                            "row_label": row_label,
-                            "code": code,
-                            "period": year,
-                            "metric": metric_name,
-                            "value": parse_value(val),
-                            "source_page": page,
-                            "batch_id": batch_id
-                        })
+                        rows.append(row_data(meta, statement_type="balance_sheet", report_type="balance_sheet",
+                                         label=line.get("chi_tieu") or "", code=line.get("ma_so"),
+                                         metric=attr, value=parse_value(val), source_page=bs.get("page_start")))
 
-    income_data = state.get("income_data", [])
-    for ist in income_data:
-        year = ist.year
-        page = ist.page_start
-        for line in ist.line_items:
-            row_label = line.chi_tieu
-            code = line.ma_so
-            note_id = line.thuyet_minh
-
-            metrics = [
-                ("ky_nay", "current_year"), 
-                ("ky_truoc", "prior_year"),
-                ("luy_ke_ky_nay", "accum_current"),
-                ("luy_ke_ky_truoc", "accum_prior")
-            ]
-            for attr, metric_name in metrics:
-                val = getattr(line, attr, None)
+    for ist in state.get("income_data") or []:
+        meta = meta_for(ist.get("scope"), ist.get("period_key"), ist.get("year"))
+        for line in ist.get("line_items") or []:
+            for attr in ("ky_nay", "ky_truoc", "luy_ke_ky_nay", "luy_ke_ky_truoc"):
+                val = line.get(attr)
                 if is_valid_value(val):
-                    numeric_df.append({
-                        "report_type": "income_statement",
-                        "note_id": note_id,
-                        "note_title": None,
-                        "note_type": None,
-                        "row_label": row_label,
-                        "code": code,
-                        "period": year,
-                        "metric": metric_name,
-                        "value": parse_value(val),
-                        "source_page": page,
-                        "batch_id": batch_id
-                    })
+                    rows.append(row_data(meta, statement_type="income_statement", report_type="income_statement",
+                                     label=line.get("chi_tieu") or "", code=line.get("ma_so"),
+                                     metric=attr, value=parse_value(val), source_page=ist.get("page_start")))
 
-    cash_data = state.get("cash_data", [])
-    for cfs in cash_data:
-        year = cfs.year
-        page = cfs.page_start
-        for sec_name, lines in cfs.sections.items():
-            for line in lines:
-                row_label = line.chi_tieu
-                code = line.ma_so
-                note_id = line.thuyet_minh
-
-                metrics = [
-                    ("luy_ke_ky_nay", "current_year"), 
-                    ("luy_ke_ky_truoc", "prior_year")
-                ]
-                for attr, metric_name in metrics:
-                    val = getattr(line, attr, None)
+    for cf in state.get("cash_data") or []:
+        meta = meta_for(cf.get("scope"), cf.get("period_key"), cf.get("year"))
+        for section, lines in (cf.get("sections") or {}).items():
+            for line in lines or []:
+                for attr in ("luy_ke_ky_nay", "luy_ke_ky_truoc"):
+                    val = line.get(attr)
                     if is_valid_value(val):
-                        numeric_df.append({
-                            "report_type": "cash_flow",
-                            "note_id": note_id,
-                            "note_title": None,
-                            "note_type": None,
-                            "row_label": row_label,
-                            "code": code,
-                            "period": year,
-                            "metric": metric_name,
-                            "value": parse_value(val),
-                            "source_page": page,
-                            "batch_id": batch_id
-                        })
+                        rows.append(row_data(meta, statement_type="cash_flow", report_type="cash_flow",
+                                         label=line.get("chi_tieu") or "", code=line.get("ma_so"),
+                                         metric=attr, value=parse_value(val), source_page=cf.get("page_start")))
 
-    notes_data = state.get("financial_data", [])
-    notes_ext = FinancialNotesExtractor()
+    mapper = FinancialNotesExtractor().heading_mapper
+    section_no_re = getattr(mapper, "SECTION_NO", None)
     
-    for note in notes_data:
-        year = note.year
-        page = note.page_start
-        if not note.tables:
+    for note in state.get("financial_data") or []:
+        meta = meta_for(note.get("scope"), note.get("period_key"), note.get("year"))
+        tables = note.get("tables") or {}
+        if not tables:
             continue
 
-        table_keys = set()
-        for heading, rows in note.tables.items():
-            if not rows or not isinstance(rows, list):
+        table_ids = set()
+        for heading, table_rows in tables.items():
+            if not table_rows or not isinstance(table_rows, list):
                 continue
-            if not notes_ext.is_valid_section_key(heading):
+            if not mapper.is_valid_section_key(heading):
                 continue
 
-            prose_rows = [r for r in rows if isinstance(r, dict) and set(r.keys()) == {"text"}]
-            numeric_rows = [r for r in rows if not (isinstance(r, dict) and set(r.keys()) == {"text"})]
+            prose_rows = [r for r in table_rows if isinstance(r, dict) and set(r.keys()) == {"text"}]
+            numeric_rows = [r for r in table_rows if not (isinstance(r, dict) and set(r.keys()) == {"text"})]
 
-            note_id_tuple = notes_ext.parse_section_key(heading)
-            note_id_str = str(note_id_tuple[0]) if note_id_tuple[0] != 999 else ""
+            note_id_tuple = mapper.parse_section_key(heading)
+            note_id = "" if note_id_tuple[0] == 999 else str(note_id_tuple[0])
             if note_id_tuple[0] != 999 and note_id_tuple[1] != 0:
-                note_id_str += f".{note_id_tuple[1]}"
-            m = notes_ext.SECTION_NO.match(heading)
-            section_num = m.group(1) if m else ""
-            note_type = notes_ext.map_heading_to_section(section_num)
+                note_id = f"{note_id}.{note_id_tuple[1]}"
+            match = section_no_re.match(heading) if section_no_re else None
+            note_type = mapper.map_heading_to_section(match.group(1) if match else "")
 
             if numeric_rows:
-                table_keys.add(note_id_tuple)
-                note_title = heading
+                table_ids.add(note_id_tuple)
                 for row in numeric_rows:
                     if not isinstance(row, dict):
                         continue
-                    row_label = row.get("Items") or row.get("chi_tieu") or ""
-                    code = row.get("Code") or row.get("ma_so") or ""
-
+                    label = row.get("Items") or row.get("chi_tieu") or row.get("title") or ""
+                    code = row.get("Code") or row.get("ma_so")
                     for key, val in row.items():
-                        if key in ["Items", "chi_tieu", "Code", "ma_so", "Notes", "thuyet_minh", "Prefix", "prefix"]:
+                        if key in NOTE_LABEL_KEYS:
                             continue
                         if is_valid_value(val) and is_numeric_literal(val):
-                            numeric_df.append({
-                                "report_type": "notes",
-                                "note_id": note_id_str,
-                                "note_title": note_title,
-                                "note_type": note_type,
-                                "row_label": str(row_label),
-                                "code": str(code),
-                                "period": year,
-                                "metric": key,
-                                "value": parse_value(val),
-                                "source_page": page,
-                                "batch_id": batch_id
-                            })
+                            rows.append(row_data(meta, statement_type="notes", report_type="notes",
+                                             label=str(label), code=str(code) if code else None,
+                                             metric=str(key), value=parse_value(val),
+                                             source_page=note.get("page_start"), note_id=note_id,
+                                             note_title=heading, note_type=note_type))
 
             if prose_rows:
-                if note_id_tuple in table_keys and note_id_tuple != (999, 0):
+                if note_id_tuple in table_ids and note_id_tuple != (999, 0):
                     continue
                 for tr in prose_rows:
                     narrative_store.append({
-                        "note_id": note_id_str,
+                        "note_id": note_id,
                         "note_title": heading,
-                        "text": tr.get("text", "")
+                        "scope": meta.get("scope"),
+                        "period_key": meta.get("period_key"),
+                        "text": tr.get("text", ""),
                     })
 
-    note_id_to_title = {}
-    for row in numeric_df:
-        if row["report_type"] == "notes" and row["note_id"]:
-            existing_title = note_id_to_title.get(row["note_id"])
-            if existing_title and existing_title != row["note_title"]:
-                row["note_title"] = existing_title
-            else:
-                note_id_to_title[row["note_id"]] = row["note_title"]
-    
-    return {"harmonized_dataset": numeric_df, "narrative_store": narrative_store}
+    return {"harmonized_dataset": rows, "narrative_store": narrative_store}

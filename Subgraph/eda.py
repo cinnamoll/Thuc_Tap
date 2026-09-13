@@ -1,10 +1,11 @@
 from dotenv import load_dotenv
 from langgraph.graph import StateGraph, START, END
-from typing import List, Literal, Annotated
+from typing import Any, Dict, List, Literal, Annotated
 from langchain_core.messages import SystemMessage, ToolMessage, HumanMessage
 from langchain_deepseek import ChatDeepSeek
 from langchain_core.tools import tool, InjectedToolCallId
 from langgraph.prebuilt import ToolNode
+import os
 import pandas as pd
 import matplotlib.pyplot as plt
 import seaborn as sns
@@ -13,25 +14,14 @@ import matplotlib
 
 from Class.AgentState import AgentState
 from Class.EDAInsight import EDAInsight
+from Subgraph.canonicalize import PERIOD_METRIC
 
 matplotlib.use('Agg') 
 load_dotenv()
-
 llm = ChatDeepSeek(model="deepseek-v4-flash")
-    
-def read_df(file_path: str, file_format: str) -> pd.DataFrame:
-    if file_format == "csv":
-        df = pd.read_csv(file_path)
-    elif file_format == "parquet":
-        df = pd.read_parquet(file_path)
-    elif file_format == "json":
-        df = pd.read_json(file_path, lines=True)
-    else:
-        raise ValueError(f"Don't support {file_format}")
-    return df
 
 @tool
-def univariate_analyst_numeric(file_path: str, file_format: str, column: str, group_by: str, tool_call_id: Annotated[str, InjectedToolCallId]) -> str:
+def univariate_analyst_numeric(file_path: str, column: str, group_by: str, tool_call_id: Annotated[str, InjectedToolCallId]) -> str:
     """
     Apply this tool only to numeric data columns to extract statistical analysis containing:
         - Measures central tendency (mean, median) to find the typical value.
@@ -46,8 +36,7 @@ def univariate_analyst_numeric(file_path: str, file_format: str, column: str, gr
     Returns:
         Update the univariate field in AgentState with the dictionary containing value required
     """
-    df = read_df(file_path, file_format)
-
+    df = pd.read_csv(file_path)
     if column not in df.columns:
         return f"'{column}' not found in dataset."
 
@@ -77,7 +66,7 @@ def univariate_analyst_numeric(file_path: str, file_format: str, column: str, gr
             upper_bound = q3 + 1.5 * iqr
 
             outlier_count = int(((series < lower_bound) | (series > upper_bound)).sum())
-            review_flag = outlier_count > 0  # Flag for review, not for cleaning
+            review_flag = outlier_count > 0 
 
             if skew_val is None or pd.isna(skew_val):
                 skew_desc = "Unidentified"
@@ -108,7 +97,7 @@ def univariate_analyst_numeric(file_path: str, file_format: str, column: str, gr
                 "skewness": round(float(skew_val) if not pd.isna(skew_val) else 0.0, 4),
                 "skewness_description": skew_desc,
                 "outliers_count": outlier_count,
-                "review_flag": review_flag,  # True = needs review, not cleaning
+                "review_flag": review_flag,  
                 "lower_bound": round(float(lower_bound), 4),
                 "upper_bound": round(float(upper_bound), 4)
             }
@@ -172,7 +161,7 @@ def univariate_analyst_numeric(file_path: str, file_format: str, column: str, gr
         return Command(update={"univariate": [res], "messages": [ToolMessage(content=str(res), tool_call_id=tool_call_id)]})
     
 @tool
-def univariate_analyst_cat(file_path: str, file_format: str, column: str, tool_call_id: Annotated[str, InjectedToolCallId]) -> str:
+def univariate_analyst_cat(file_path: str, column: str, tool_call_id: Annotated[str, InjectedToolCallId]) -> str:
     """
     Apply this tool only to nominal data columns to extract statistical analysis containing:
         - Unique column values, mode, count of distinct categories, count of null values in our variable
@@ -186,8 +175,7 @@ def univariate_analyst_cat(file_path: str, file_format: str, column: str, tool_c
     Returns:
         Update the univariate field in AgentState with the dictionary containing value required
     """
-    df = read_df(file_path, file_format)
-
+    df = pd.read_csv(file_path)
     if column not in df.columns:
         return f"'{column}' not found in dataset."
 
@@ -204,7 +192,6 @@ def univariate_analyst_cat(file_path: str, file_format: str, column: str, tool_c
     null_count = int(series.isna().sum())
     total_count = len(df)
 
-    # Build frequency table
     value_counts = series.value_counts(dropna=False).reset_index()
     value_counts.columns = ["Column_value", "Value_count"]
     value_counts["Frequency"] = value_counts["Value_count"] / total_count
@@ -234,7 +221,7 @@ def univariate_analyst_cat(file_path: str, file_format: str, column: str, tool_c
     return Command(update={"univariate": [res],"messages": [ToolMessage(content=str(res), tool_call_id=tool_call_id)]})
  
 @tool
-def draw_graph(file_path: str, file_format: str, cols: List[str], tool_call_id: Annotated[str, InjectedToolCallId]) -> str:
+def draw_graph(file_path: str, cols: List[str], tool_call_id: Annotated[str, InjectedToolCallId], output_dir: str = "Subgraph_Img") -> str:
     """
     Apply this tool to draw graph for user using columns name and dataset file_path.
 
@@ -244,8 +231,7 @@ def draw_graph(file_path: str, file_format: str, cols: List[str], tool_call_id: 
         file_path (str): dataset file path
 
     """
-    df = read_df(file_path, file_format)
-    
+    df = pd.read_csv(file_path)
     invalid_cols = [c for c in cols if c not in df.columns]
     if invalid_cols:
         return Command(update={"messages": [ToolMessage(content=f"Columns {invalid_cols} not found in dataset schema. Valid columns: {df.columns.tolist()}", tool_call_id=tool_call_id)]})
@@ -257,7 +243,6 @@ def draw_graph(file_path: str, file_format: str, cols: List[str], tool_call_id: 
         return pd.api.types.is_string_dtype(df[col]) or pd.api.types.is_categorical_dtype(df[col])
 
     df_plot = df[cols].dropna()
-    
     plt.figure(figsize=(10, 6))
 
     if len(cols) == 1:
@@ -302,17 +287,15 @@ def draw_graph(file_path: str, file_format: str, cols: List[str], tool_call_id: 
     temp = "" 
     for col in cols:
         temp += (col + '_')
-    file_name = f"{temp}_eda_output.png"
+    file_name = os.path.join(output_dir, f"{temp}_eda_output.png")
+    os.makedirs(output_dir, exist_ok=True)
     plt.savefig(file_name)
     plt.close()
     
-    return Command(update={
-        "chart_paths": [file_name], 
-        "messages": [ToolMessage(content=f"Graph successfully drawn and saved at {file_name}", tool_call_id=tool_call_id)]
-    })
+    return Command(update={"chart_paths": [file_name], "messages": [ToolMessage(content=f"Graph successfully drawn and saved at {file_name}", tool_call_id=tool_call_id)]})
 
 @tool
-def trend_analysis(file_path: str, file_format: str, column: str, group_by: str, time_col: str, tool_call_id: Annotated[str, InjectedToolCallId]) -> str:
+def trend_analysis(file_path: str, column: str, group_by: str, time_col: str, tool_call_id: Annotated[str, InjectedToolCallId], output_dir: str = "Graph_Img") -> str:
     """
     Generate line charts showing trends of each line item across periods/years.
     Use this instead of histogram/boxplot for time-series financial data.
@@ -326,7 +309,7 @@ def trend_analysis(file_path: str, file_format: str, column: str, group_by: str,
     Returns:
         Trend chart saved to file + trend statistics per group
     """
-    df = read_df(file_path, file_format)
+    df = pd.read_csv(file_path)
     for c in [column, group_by, time_col]:
         if c not in df.columns:
             return Command(update={"messages": [ToolMessage(content=f"Column '{c}' not found.", tool_call_id=tool_call_id)]})
@@ -351,18 +334,15 @@ def trend_analysis(file_path: str, file_format: str, column: str, group_by: str,
     plt.legend(bbox_to_anchor=(1.05, 1), loc='upper left', fontsize=7)
     plt.xticks(rotation=45)
     plt.tight_layout()
-    file_name = f"trend_{column}_{group_by}_eda_output.png"
+    file_name = os.path.join(output_dir, f"trend_{column}_{group_by}_eda_output.png")
+    os.makedirs(output_dir, exist_ok=True)
     plt.savefig(file_name)
     plt.close()
 
-    return Command(update={
-        "chart_paths": [file_name],
-        "univariate": trend_stats,
-        "messages": [ToolMessage(content=f"Trend chart saved at {file_name}. Stats: {trend_stats[:5]}", tool_call_id=tool_call_id)]
-    })
+    return Command(update={"chart_paths": [file_name], "univariate": trend_stats, "messages": [ToolMessage(content=f"Trend chart saved at {file_name}. Stats: {trend_stats[:5]}", tool_call_id=tool_call_id)]})
 
 @tool
-def common_size_analysis(file_path: str, file_format: str, column: str, group_by: str, base_item: str, time_col: str, tool_call_id: Annotated[str, InjectedToolCallId]) -> str:
+def common_size_analysis(file_path: str, column: str, group_by: str, base_item: str, time_col: str, tool_call_id: Annotated[str, InjectedToolCallId]) -> str:
     """
     Express each line item as a percentage of a base item (e.g. Total Assets for BS, Revenue for IS).
 
@@ -376,7 +356,7 @@ def common_size_analysis(file_path: str, file_format: str, column: str, group_by
     Returns:
         Common-size percentages per line item per period
     """
-    df = read_df(file_path, file_format)
+    df = pd.read_csv(file_path)
     for c in [column, group_by, time_col]:
         if c not in df.columns:
             return Command(update={"messages": [ToolMessage(content=f"Column '{c}' not found.", tool_call_id=tool_call_id)]})
@@ -396,13 +376,83 @@ def common_size_analysis(file_path: str, file_format: str, column: str, group_by
                 "common_size_pct": round(float(pct), 2)
             })
 
-    return Command(update={
-        "univariate": results[:50],
-        "messages": [ToolMessage(content=f"Common-size analysis complete. {len(results)} items computed. Sample: {results[:3]}", tool_call_id=tool_call_id)]
-    })
+    return Command(update={"univariate": results[:50], "messages": [ToolMessage(content=f"Common-size analysis complete. {len(results)} items computed. Sample: {results[:3]}", tool_call_id=tool_call_id)]})
+
+def compute_consistency_flags(df: pd.DataFrame) -> List[Dict[str, Any]]:
+    flags: List[Dict[str, Any]] = []
+    if "line_item_canonical" not in df.columns or "value" not in df.columns:
+        return flags
+
+    time_col = next((c for c in ("period", "period_key", "fiscal_year", "year") if c in df.columns), None)
+    if not time_col or "report_type" not in df.columns or "metric" not in df.columns:
+        return flags
+
+    wanted = df["report_type"].map(PERIOD_METRIC)
+    sel = df[(df["metric"] == wanted) & df["line_item_canonical"].notna()]
+    if sel.empty:
+        return flags
+
+    scope_col = "scope" if "scope" in df.columns else None
+    group_keys = [scope_col, time_col] if scope_col else [time_col]
+
+    for key, part in sel.groupby(group_keys, dropna=False):
+        scope, period_key = (key if scope_col else ("", key))
+        vals: Dict[str, float] = {}
+        for _, row in part.iterrows():
+            canon = row["line_item_canonical"]
+            if canon in vals:
+                continue
+            try:
+                vals[canon] = float(row["value"])
+            except (TypeError, ValueError):
+                continue
+
+        def num(name: str) -> float:
+            return vals.get(name, 0.0)
+
+        base = {"period_key": str(period_key), "scope": str(scope or ""), "flag_type": "identity_violation"}
+
+        assets, liab, equity, total = num("tong_tai_san"), num("no_phai_tra"), num("von_chu_so_huu"), num("tong_nguon_von")
+        if assets and (liab or equity):
+            diff = abs(assets - (liab + equity))
+            if diff > 1.0:
+                flags.append({**base, "field": "tong_tai_san", "severity": "HIGH",
+                              "message": (f"{period_key}/{scope}: Tài sản ({assets:,.0f}) != "
+                                          f"Nợ phải trả + Vốn CSH ({liab + equity:,.0f}), lệch {diff:,.0f}")})
+        if total and (liab or equity):
+            diff = abs(total - (liab + equity))
+            if diff > 1.0:
+                flags.append({**base, "field": "tong_nguon_von", "severity": "HIGH",
+                              "message": (f"{period_key}/{scope}: Tổng nguồn vốn ({total:,.0f}) != "
+                                          f"Nợ phải trả + Vốn CSH ({liab + equity:,.0f}), lệch {diff:,.0f}")})
+
+        before_tax, after_tax, tax = num("loi_nhuan_truoc_thue"), num("loi_nhuan_sau_thue"), num("thue_tndn_hien_hanh")
+        if before_tax and after_tax:
+            diff = abs(after_tax - (before_tax - tax))
+            if diff > 1.0:
+                flags.append({**base, "field": "loi_nhuan_sau_thue", "severity": "HIGH",
+                              "message": (f"{period_key}/{scope}: LNST ({after_tax:,.0f}) != "
+                                          f"LNTT − Thuế TNDN ({before_tax - tax:,.0f}), lệch {diff:,.0f}")})
+
+        op, inv, fin = num("luu_chuyen_kinh_doanh"), num("luu_chuyen_dau_tu"), num("luu_chuyen_tai_chinh")
+        net, opening, closing = num("luu_chuyen_trong_ky"), num("tien_dau_ky"), num("tien_cuoi_ky")
+        if net and (op or inv or fin):
+            diff = abs(net - (op + inv + fin))
+            if diff > 1.0:
+                flags.append({**base, "field": "luu_chuyen_trong_ky", "severity": "HIGH",
+                              "message": (f"{period_key}/{scope}: Lưu chuyển thuần ({net:,.0f}) != "
+                                          f"KD + ĐT + TC ({op + inv + fin:,.0f}), lệch {diff:,.0f}")})
+        if closing and opening and net:
+            diff = abs(closing - (opening + net))
+            if diff > 1.0:
+                flags.append({**base, "field": "tien_cuoi_ky", "severity": "HIGH",
+                              "message": (f"{period_key}/{scope}: Tiền cuối kỳ ({closing:,.0f}) != "
+                                          f"Tiền đầu kỳ + LC thuần ({opening + net:,.0f}), lệch {diff:,.0f}")})
+
+    return flags
 
 @tool
-def cross_statement_consistency_check(file_path: str, file_format: str, tool_call_id: Annotated[str, InjectedToolCallId]) -> str:
+def cross_statement_consistency_check(file_path: str, tool_call_id: Annotated[str, InjectedToolCallId]) -> str:
     """
     Cross-reference key figures between financial statements:
     - Net Income consistency between IncomeStatement and CashFlow (operating)
@@ -414,53 +464,13 @@ def cross_statement_consistency_check(file_path: str, file_format: str, tool_cal
     Returns:
         List of consistency flags with severity levels
     """
-    df = read_df(file_path, file_format)
-    flags = []
-
-    # PROFIT_KEY = "loi_nhuan_sau_thue"
-
-    if "line_item_canonical" in df.columns and "value" in df.columns:
-        time_col = None
-        for candidate in ["fiscal_year", "year", "period"]:
-            if candidate in df.columns:
-                time_col = candidate
-                break
-        if time_col:
-            for period_val in df[time_col].unique():
-                period_df = df[df[time_col] == period_val]
-                vals = dict(zip(period_df["line_item_canonical"], period_df["value"]))
-                assets = vals.get("tong_tai_san", 0.0)
-                liab = vals.get("no_phai_tra", 0.0)
-                equity = vals.get("von_chu_so_huu", 0.0)
-                if assets > 0 and (liab > 0 or equity > 0):
-                    diff = abs(assets - (liab + equity))
-                    if diff > 1e-2:
-                        flags.append({
-                            "period": str(period_val),
-                            "check": "balance_sheet_identity",
-                            "message": f"Assets ({assets:.2f}) != Liabilities + Equity ({liab + equity:.2f}), diff={diff:.2f}",
-                            "severity": "HIGH",
-                            "review_flag": True
-                        })
-    elif all(k in df.columns for k in ["tong_tai_san", "no_phai_tra", "von_chu_so_huu"]):
-        for idx, row in df.iterrows():
-            diff = abs(row["tong_tai_san"] - (row["no_phai_tra"] + row["von_chu_so_huu"]))
-            if diff > 1e-2:
-                flags.append({
-                    "row": int(idx),
-                    "check": "balance_sheet_identity",
-                    "message": f"Row {idx}: Assets ({row["tong_tai_san"]:.2f}) != L+E ({row["no_phai_tra"] + row["von_chu_so_huu"]:.2f})",
-                    "severity": "HIGH",
-                    "review_flag": True
-                })
-
+    df = pd.read_csv(file_path)
+    flags = compute_consistency_flags(df)
     if not flags:
-        flags.append({"check": "all_passed", "message": "No cross-statement inconsistencies found.", "severity": "LOW", "review_flag": False})
+        flags = [{"check": "all_passed", "message": "No cross-statement inconsistencies found.",
+                  "severity": "LOW", "review_flag": False}]
 
-    return Command(update={
-        "univariate": flags,
-        "messages": [ToolMessage(content=f"Cross-statement check complete. Flags: {flags}", tool_call_id=tool_call_id)]
-    })
+    return Command(update={"univariate": flags, "messages": [ToolMessage(content=f"Cross-statement check complete. Flags: {flags}", tool_call_id=tool_call_id)]})
     
 eda_tools = [univariate_analyst_numeric, univariate_analyst_cat, draw_graph, trend_analysis, common_size_analysis, cross_statement_consistency_check]
 tool_node = ToolNode(eda_tools)
@@ -481,7 +491,7 @@ def propose_insight_node(state: AgentState) -> AgentState:
     valid_cols = dataset_profile.get('columns', [])
     if not valid_cols and file_path:
         try:
-            valid_cols = read_df(file_path, file_format).columns.tolist()
+            valid_cols = pd.read_csv(file_path).columns.tolist()
         except Exception:
             valid_cols = []
 
@@ -528,10 +538,7 @@ def propose_insight_node(state: AgentState) -> AgentState:
     if state.get("chart_paths") and not res.chart_paths:
         res.chart_paths = state.get("chart_paths") 
 
-    return Command(update={
-        "pending_insight": existing_actions + [res],  
-        "messages": [HumanMessage(content=summary)]
-    })
+    return Command(update={"pending_insight": existing_actions + [res], "messages": [HumanMessage(content=summary)]})
 
 def route_tool_or_finish(state) -> Literal["eda_tools", 'propose_insight']:
     last_msg = state["messages"][-1]
@@ -568,7 +575,3 @@ eda_graph.add_conditional_edges(
 )
 eda_graph.add_edge("eda_tools", "eda_agent")
 eda = eda_graph.compile()
-
-# img = eda.get_graph().draw_mermaid_png()
-# with open('Subgraph_Img/eda_image.png', 'wb') as f:
-#     f.write(img)
