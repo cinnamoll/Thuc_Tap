@@ -81,17 +81,22 @@ def plot_metrics_by_period(dataset: Dict[str, Dict[str, float]], output_dir: str
     plt.close(fig)
     return path
 
-def write_narrative_mda(dataset: Dict[str, Dict[str, float]], ratios: dict, trends: dict, flags: list, symbol: str = "", scope: str = "") -> str:
+def write_narrative_mda(dataset: Dict[str, Dict[str, float]], ratios: dict, trends: dict, flags: list, forecasts: dict = None, symbol: str = "", scope: str = "") -> str:
+    # Prepare forecast information for the prompt
+    forecast_info = ""
+    if forecasts:
+        forecast_info = "\n- Dự báo tài chính (tỷ VND): " + str(forecasts)
+
     prompt = f"""
     Viết báo cáo phân tích quản trị (MD&A) bằng tiếng Việt dựa trên dữ liệu sau.
     - Doanh nghiệp: {symbol or 'N/A'} - phạm vi báo cáo: {scope or 'N/A'}
     - Dữ liệu tài chính theo quý (đơn vị: tỷ VND): {dataset}
     - Chỉ số (ROE, ROA, Debt/Equity, Net Margin): {ratios}
     - Tăng trưởng QoQ/YoY/CAGR: {trends}
-    - Cảnh báo & bất thường: {flags}
+    - Cảnh báo & bất thường: {flags}{forecast_info}
 
     Yêu cầu: (1) đánh giá tổng quan sức khỏe tài chính theo quý; (2) phân tích
-    nguyên nhân biến động và các cảnh báo kế toán; (3) khuyến nghị ngắn gọn.
+    nguyên nhân biến động và các cảnh báo kế toán; (3) phân tích xu hướng và dự báo futuro; (4) khuyến nghị ngắn gọn.
     """
     res = llm.invoke([
         SystemMessage(content="Bạn là Chuyên gia Phân tích Tài chính Cao cấp."),
@@ -106,10 +111,22 @@ def assemble_report_markdown(narrative: str, dataset: Dict[str, Dict[str, float]
                              trends: dict, flags: list, chart_paths: List[str],
                              scope_reconciliation: List[Dict[str, Any]] | None = None,
                              narrative_store: List[Dict[str, Any]] | None = None,
+                             forecasts: dict = None,
+                             scenarios: dict = None,
+                             health_scores: dict = None,
                              symbol: str = "", scope: str = "", unit: str = "VND_BILLION") -> str:
     keys = sorted((dataset or {}).keys(), key=period_sort_key)
     report = [f"# BÁO CÁO PHÂN TÍCH TÀI CHÍNH — {symbol or 'DOANH NGHIỆP'}"]
     report.append(f"**Phạm vi dữ liệu:** {scope or 'n/a'} · **Số kỳ:** {len(keys)} ({keys[0] if keys else 'n/a'} → {keys[-1] if keys else 'n/a'}) · Đơn vị: tỷ VND\n")
+
+    if health_scores and scope in health_scores:
+        report.append("## 0. Dashboard Sức khỏe Tài chính & Đánh giá Rủi ro\n")
+        scope_health = health_scores[scope]
+        if keys and keys[-1] in scope_health:
+            latest_health = scope_health[keys[-1]]
+            report.append(f"- **Điểm sức khỏe tổng hợp ({keys[-1]}):** {latest_health.get('composite_score', 0)}/100")
+            report.append(f"- **Phân loại rủi ro:** **{latest_health.get('risk_level', 'N/A')}**")
+            report.append(f"- **Khả năng sinh lời:** {latest_health.get('profitability_score', 0)}/100 · **Đòn bẩy & An toàn:** {latest_health.get('leverage_score', 0)}/100 · **Dòng tiền:** {latest_health.get('cash_flow_score', 0)}/100\n")
 
     report.append("## 1. Phân tích Tường thuật Quản trị (MD&A)\n")
     report.append(narrative or "_Không có nội dung._")
@@ -129,7 +146,19 @@ def assemble_report_markdown(narrative: str, dataset: Dict[str, Dict[str, float]
     report.append(f"{trends}")
     report.append("```")
 
-    report.append("\n## 5. Cảnh báo Kế toán & Bất thường\n")
+    if forecasts:
+        report.append("\n## 5. Dự báo tài chính\n")
+        report.append("```json")
+        report.append(f"{forecasts}")
+        report.append("```")
+
+    if scenarios:
+        report.append("\n## 6. Phân tích Kịch bản & Kiểm tra Ứng xử (Stress Testing)\n")
+        report.append("```json")
+        report.append(f"{scenarios}")
+        report.append("```")
+
+    report.append("\n## 7. Cảnh báo Kế toán & Bất thường\n")
     if flags:
         for flag in flags:
             period = flag.get("period_key") or flag.get("year") or ""
@@ -137,7 +166,7 @@ def assemble_report_markdown(narrative: str, dataset: Dict[str, Dict[str, float]
     else:
         report.append("Không ghi nhận bất thường kế toán hoặc vi phạm đẳng thức.")
 
-    report.append("\n## 6. Biểu đồ\n")
+    report.append("\n## 8. Biểu đồ\n")
     if chart_paths:
         for path in chart_paths:
             report.append(f"![Chart]({path})")
@@ -168,6 +197,27 @@ def assemble_report_markdown(narrative: str, dataset: Dict[str, Dict[str, float]
         report.append("_Không có đoạn thuyết minh nào được trích._")
     return "\n".join(report)
 
+
+def generate_interactive_report_json(state: FinancialReportState) -> Dict[str, Any]:
+    """
+    Generate structured interactive report JSON payload for frontend exploration.
+    """
+    metrics = state.get("period_metrics") or {}
+    scope, dataset = select_scope(metrics)
+    return {
+        "batch_id": state.get("batch_id"),
+        "symbol": state.get("symbol"),
+        "scope": scope,
+        "dataset": dataset,
+        "ratios": state.get("ratios") or {},
+        "trends": state.get("trends") or {},
+        "forecasts": state.get("financial_forecasts") or {},
+        "scenarios": state.get("scenario_analysis_results") or {},
+        "health_score": state.get("financial_health_score") or {},
+        "flags": state.get("validation_flags") or []
+    }
+
+
 def generate_report_node(state: FinancialReportState) -> dict:
     metrics = state.get("period_metrics") or {}
     scope, dataset = select_scope(metrics)
@@ -182,12 +232,17 @@ def generate_report_node(state: FinancialReportState) -> dict:
 
     flags = list(state.get("validation_flags") or [])
     narrative = write_narrative_mda(dataset, state.get("ratios") or {}, state.get("trends") or {},
-                                    flags, state.get("symbol") or "", scope)
+                                    flags, state.get("financial_forecasts") or {},
+                                    state.get("symbol") or "", scope)
     report = assemble_report_markdown(
         narrative, dataset, state.get("ratios") or {}, state.get("trends") or {}, flags,
         chart_paths, state.get("scope_reconciliation") or [], state.get("narrative_store") or [],
+        forecasts=state.get("financial_forecasts") or {},
+        scenarios=state.get("scenario_analysis_results") or {},
+        health_scores=state.get("financial_health_score") or {},
         symbol=state.get("symbol") or "", scope=scope, unit=unit,
     )
+    return {"narrative_mda": narrative, "final_report_md": report, "chart_paths": chart_paths}
     return {"narrative_mda": narrative, "final_report_md": report, "chart_paths": chart_paths}
 
 def build_report_node(state: FinancialReportState) -> dict:

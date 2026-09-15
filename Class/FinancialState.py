@@ -45,6 +45,28 @@ class FinancialReportState(AgentState, total=False):
     ratios: Dict[str, Dict[str, float]]
     trends: Dict[str, Dict[str, float]]
 
+    # Financial validation results
+    validation_flags: List[Dict[str, Any]]
+
+    # Financial forecasting results
+    financial_forecasts: Dict[str, Any]
+    forecast_generated: bool
+
+    # Scenario analysis results
+    scenario_analysis_results: Dict[str, Any]
+    scenario_analysis_performed: bool
+
+    # Financial health score results
+    financial_health_score: Dict[str, Any]
+
+    # Pipeline step tracking
+    financial_validation_done: bool
+    cleaning_done: bool
+    eda_done: bool
+    engineer_done: bool
+    financial_forecasting_done: bool
+    scenario_analysis_done: bool
+
     narrative_mda: str
     final_report_md: str
     output_report_path: Optional[str]
