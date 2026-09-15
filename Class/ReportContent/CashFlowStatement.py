@@ -1,7 +1,7 @@
 from pydantic import BaseModel, field_validator, ConfigDict
 from typing import Optional, Dict, List, Any
 
-from parse_financial_number import parse_number
+from Class.parse_financial_number import parse_number
 
 class CashFlowLine(BaseModel):
     model_config = ConfigDict(validate_assignment=True)

@@ -1,7 +1,7 @@
 import re
 import copy
 
-from parse_financial_number import parse_number
+from Class.parse_financial_number import parse_number
 
 class VerticalScheduleHandler:
     # Các method bên dưới gọi ``cls.parse_number(...)`` nên phải expose hàm

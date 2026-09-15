@@ -61,23 +61,23 @@ def msgpack_safe(obj: Any) -> Any:
     return obj
 
 def extraction_worker_node(state: FinancialReportState) -> dict:
-    payload = dict(state or {})
-    file_path = payload.get("path") or payload.get("file_path") or ""
-    year = payload.get("year")
-    symbol = payload.get("symbol") or "UNKNOWN"
-    scope = payload.get("scope")
-    period_key = payload.get("period_key")
-    ranges = normalize_ranges(payload.get("ranges"))
+    state = dict(state or {})
+    file_path = state.get("path") or state.get("file_path") or ""
+    year = state.get("year")
+    symbol = state.get("symbol") or "UNKNOWN"
+    scope = state.get("scope")
+    period_key = state.get("period_key")
+    ranges = normalize_ranges(state.get("ranges"))
 
     result: Dict[str, Any] = {
-        "file_id": payload.get("file_id") or os.path.basename(file_path),
-        "source_file": payload.get("raw_filename") or os.path.basename(file_path),
+        "file_id": state.get("file_id") or os.path.basename(file_path),
+        "source_file": state.get("raw_filename") or os.path.basename(file_path),
         "symbol": symbol,
         "year": year,
         "period_key": period_key,
         "scope": scope,
-        "lang": payload.get("lang"),
-        "circular": payload.get("circular"),
+        "lang": state.get("lang"),
+        "circular": state.get("circular"),
         "ranges": {k: list(v) for k, v in ranges.items()},
         "error": None,
         "warnings": [],

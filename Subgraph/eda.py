@@ -14,7 +14,7 @@ import matplotlib
 
 from Class.AgentState import AgentState
 from Class.EDAInsight import EDAInsight
-from Subgraph.canonicalize import PERIOD_METRIC
+from Subgraph.code_mapping import PERIOD_METRIC
 
 matplotlib.use('Agg') 
 load_dotenv()

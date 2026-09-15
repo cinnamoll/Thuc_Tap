@@ -1,4 +1,3 @@
-
 def parse_number(val):
     if val is None:
         return None
@@ -40,9 +39,4 @@ def parse_number(val):
             fval = float(t)
             return -fval if is_neg else fval
         except ValueError:
-            # Not a number. Returning the raw string here used to blow up every
-            # Optional[float] model field with a pydantic ValidationError and
-            # kill the whole report (see sj1_output/01_balance_sheet.txt), so
-            # fail loudly as None instead. Callers that want to recover a value
-            # from a noisy OCR cell use TableExtractor.coerce_financial().
             return None

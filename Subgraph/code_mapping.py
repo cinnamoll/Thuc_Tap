@@ -3,7 +3,7 @@ from typing import Any, Dict, List, Optional
 from Class.FinancialState import FinancialReportState
 from Class.TableExtractor import fold_text, match_pl_field
 
-CANONICAL_CODE_MAP: Dict[str, Dict[str, str]] = {
+CODE_MAP: Dict[str, Dict[str, str]] = {
     "balance_sheet": {
         "100": "tai_san_ngan_han",
         "110": "tien",
@@ -58,7 +58,7 @@ PERIOD_METRIC: Dict[str, str] = {
     "cash_flow": "luy_ke_ky_nay",
 }
 
-def canonical_name(report_type: str, code: Optional[str], row_label: Optional[str]) -> str:
+def code_to_name(report_type: str, code: Optional[str], row_label: Optional[str]) -> str:
     code = (code or "").strip()
     label = row_label or ""
 
@@ -73,7 +73,7 @@ def canonical_name(report_type: str, code: Optional[str], row_label: Optional[st
             return "tong_tai_san"
         return "tai_san_dai_han_khac"
 
-    mapped = CANONICAL_CODE_MAP.get(report_type, {}).get(code)
+    mapped = CODE_MAP.get(report_type, {}).get(code)
     if mapped:
         return mapped
 

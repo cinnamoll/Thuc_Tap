@@ -38,15 +38,20 @@ class FinancialReportState(AgentState, total=False):
 
     narrative_store: List[Dict[str, Any]]
     harmonized_path: Optional[str]
+    harmonized_paths: Dict[str, str]
     period_metrics: Dict[str, Dict[str, Dict[str, float]]]
     currency_unit: str
 
     scope_reconciliation: List[Dict[str, Any]]
     ratios: Dict[str, Dict[str, float]]
     trends: Dict[str, Dict[str, float]]
+    chart_map: Dict[str, List[str]]
 
     narrative_mda: str
+    narratives_mda: Dict[str, str]
     final_report_md: str
+    final_reports: Dict[str, str]
     output_report_path: Optional[str]
+    output_report_paths: List[str]
 
     analysis_mode: Literal["deterministic", "agent"]

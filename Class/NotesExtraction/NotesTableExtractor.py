@@ -5,7 +5,6 @@ from Class.TableExtractor import Word
 from Class.NotesExtraction.HeadingMapper import HeadingMapper
 from Class.NotesExtraction.VerticalHandler import VerticalScheduleHandler
 from Class.NotesExtraction.HeadingBinding import resolve_binding, remap_notes_columns
-from Class.NotesExtraction.OCRHandler import OCRHandler
 
 class NotesTableExtractor:
     """Bộ trích bảng số liệu trong phần thuyết minh (chạy trên ảnh OCR hoặc text layer).
@@ -1059,8 +1058,6 @@ class NotesTableExtractor:
                 if page_text and page_num != 20:
                     words = [Word(w["text"], w["x0"], w["x1"], w["top"], w["bottom"])
                              for w in page.extract_words() if w["text"].strip()]
-                if not words:
-                    words = OCRHandler.ocr_tokens_to_words(img, w_pt, h_pt, page_num=page_num)
                 if not words:
                     continue
                 visual_rows = cls.words_to_visual_rows(words)

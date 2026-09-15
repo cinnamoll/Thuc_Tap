@@ -13,7 +13,7 @@ from Class.EngineeringAction import EngineeringAction, EncodingType, BinningType
 from Subgraph.cleaning import cleaning
 from Subgraph.eda import eda 
 from Subgraph.feature import feature_engineering
-from Subgraph.canonicalize import PERIOD_METRIC
+from Subgraph.code_mapping import PERIOD_METRIC
 
 @tool
 def compute_impact_cleaning(action: CleaningAction, dataset_profile: dict) -> dict:
@@ -230,7 +230,7 @@ def validator_node(state: AgentState) -> dict:
     acct_flags = list(state.get("validation_flags") or [])
     if harmonized and isinstance(harmonized, list):
         from collections import defaultdict
-        from Subgraph.canonicalize import PERIOD_METRIC
+        from Subgraph.code_mapping import PERIOD_METRIC
         grouped = defaultdict(dict)
         for row in harmonized:
             if PERIOD_METRIC.get(row.get("report_type")) != row.get("metric"):

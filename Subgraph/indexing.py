@@ -9,9 +9,6 @@ import pdfplumber
 from Class.FinancialState import FinancialReportState
 from Class.TableExtractor import fold_text, folded_contains
 
-SCOPE_CONSOLIDATED = "consolidated"
-SCOPE_SEPARATE = "separate"
-
 BS_KEY = ("balancesheet", "statementoffinancialposition", "bangcandoiketoan")
 IS_KEY = ("incomestatement", "statementofcomprehensiveincome", "ketquahoatdongkinhdoanh")
 CF_KEY = ("cashflowstatement", "statementofcashflows", "baocaoluuchuyentiente")
@@ -116,20 +113,20 @@ def detect_symbol(compacts: List[str], cover_text: str) -> Tuple[str, str]:
 
 def locate_ranges(compacts: List[str]) -> Dict[str, Tuple[int, int]]:
     n = len(compacts)
-    bs = first_page(compacts, BS_KEY, INDEX_PAGE_SKIP)
-    is_ = first_page(compacts, IS_KEY, (bs + 1) if bs is not None else INDEX_PAGE_SKIP)
-    cf = first_page(compacts, CF_KEY, (is_ + 1) if is_ is not None else INDEX_PAGE_SKIP)
+    balance = first_page(compacts, BS_KEY, INDEX_PAGE_SKIP)
+    income = first_page(compacts, IS_KEY, (balance + 1) if balance is not None else INDEX_PAGE_SKIP)
+    cash_flow = first_page(compacts, CF_KEY, (income + 1) if income is not None else INDEX_PAGE_SKIP)
 
-    if bs is None and (is_ is not None or cf is not None):
-        bs = INDEX_PAGE_SKIP
-    if is_ is None and cf is not None:
-        is_ = max((bs + 1) if bs is not None else 0, cf - 1)
-    if cf is None and is_ is not None:
-        cf = is_ + 1
-    if bs is None or is_ is None or cf is None or cf >= n:
+    if balance is None and (income is not None or cash_flow is not None):
+        balance = INDEX_PAGE_SKIP
+    if income is None and cash_flow is not None:
+        income = max((balance + 1) if balance is not None else 0, cash_flow - 1)
+    if cash_flow is None and income is not None:
+        cash_flow = income + 1
+    if balance is None or income is None or cash_flow is None or cash_flow >= n:
         return {}
 
-    return {"BS": (bs, max(bs, is_ - 1)), "IS": (is_, is_), "CF": (cf, cf), "NOTES": (cf + 1, n - 1),}
+    return {"BS": (balance, max(balance, income - 1)), "IS": (income, income), "CF": (cash_flow, cash_flow), "NOTES": (cash_flow + 1, n - 1),}
 
 def detect_scope(compacts: List[str], ranges: Dict[str, Tuple[int, int]]) -> str:
     for key in ("BS", "IS", "CF"):
@@ -137,8 +134,8 @@ def detect_scope(compacts: List[str], ranges: Dict[str, Tuple[int, int]]) -> str
             continue
         i = ranges[key][0]
         if any(folded_contains(compacts[i], k) for k in ("consolidated", "hopnhat")):
-            return SCOPE_CONSOLIDATED
-    return SCOPE_SEPARATE
+            return "consolidated"
+    return "separate"
 
 def detect_lang(compacts: List[str], ranges: Dict[str, Tuple[int, int]]) -> str:
     for key in ("BS", "IS", "CF"):
@@ -150,7 +147,6 @@ def detect_lang(compacts: List[str], ranges: Dict[str, Tuple[int, int]]) -> str:
     return "en"
 
 def detect_form_and_circular(raw_pages: List[str], ranges: Dict[str, Tuple[int, int]]) -> Tuple[str, str]:
-    """Đọc 'Form No: B 01 - DN' / 'Mẫu số: B 01 - DN' và số Thông tư áp dụng."""
     page_text = raw_pages[ranges["BS"][0]] if "BS" in ranges and ranges["BS"][0] < len(raw_pages) else ""
 
     form = ""
@@ -168,7 +164,7 @@ def detect_form_and_circular(raw_pages: List[str], ranges: Dict[str, Tuple[int, 
             circular = m.group(1)
     return form, circular
 
-def detect_unit(raw_pages: List[str], ranges: Dict[str, Tuple[int, int]]) -> str:
+def detect_currency_unit(raw_pages: List[str], ranges: Dict[str, Tuple[int, int]]) -> str:
     page_text = raw_pages[ranges["BS"][0]] if "BS" in ranges and ranges["BS"][0] < len(raw_pages) else ""
     if not page_text:
         return "VND"
@@ -187,7 +183,6 @@ def build_batch(state: FinancialReportState) -> dict:
     return {"batch_id": f"batch_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:6]}"}
 
 def index_files(state: FinancialReportState) -> dict:
-    """Định danh mọi tệp đầu vào -> ``extraction_plan`` (mỗi tệp một StatementLocation)."""
     input_files = state.get("input_files", []) or []
     plan: List[Dict[str, Any]] = []
 
@@ -203,7 +198,7 @@ def index_files(state: FinancialReportState) -> dict:
         scope = detect_scope(compacts, ranges) if ranges else "unknown"
         lang = detect_lang(compacts, ranges) if ranges else "en"
         form, circular = detect_form_and_circular(raw, ranges)
-        unit = detect_unit(raw, ranges)
+        unit = detect_currency_unit(raw, ranges)
 
         if year and quarter:
             period_key = f"{year}Q{quarter}"
@@ -254,7 +249,7 @@ def select_files(state: FinancialReportState) -> dict:
 
     period_index: List[Dict[str, Any]] = []
     for period_key, scopes in grouped.items():
-        preferred = SCOPE_CONSOLIDATED if SCOPE_CONSOLIDATED in scopes else sorted(scopes)[0]
+        preferred = "consolidated" if "consolidated" in scopes else sorted(scopes)[0]
         for scope, item in scopes.items():
             period_index.append({
                 "period_key": period_key,

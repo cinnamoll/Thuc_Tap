@@ -1,9 +1,11 @@
 import re
 from typing import Any, Dict, List, Optional, Tuple, Type
 from pydantic import BaseModel
+from dataclasses import dataclass
 
 from Class.ReportContent.FinancialNotesReport import DacDiemHoatDong, BoSungBangCanDoi, BoSungKetQuaKD, BoSungLuuChuyenTienTe,NhungThongTinKhac,FinancialNotesReport
 
+@dataclass
 class BindingResult:
     field: str
     sub_key: str
@@ -14,6 +16,7 @@ class BindingResult:
     raw_heading: Optional[str] = None
     page_num: Optional[int] = None
 
+@dataclass
 class NoteBindingDefinition:
     note_no: str
     field: str
@@ -22,6 +25,7 @@ class NoteBindingDefinition:
     table_shape: str
     keywords: Tuple[str, ...]
 
+@dataclass
 class KeywordFallbackRule:
     patterns: Tuple[str, ...]
     field: str

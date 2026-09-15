@@ -3,7 +3,7 @@ import unicodedata
 from typing import Optional, Dict, List
 import pdfplumber
 
-from parse_financial_number import parse_number
+from Class.parse_financial_number import parse_number
 
 from Class.ReportContent.BalanceSheet import BalanceSheet, BalanceSheetLine
 from Class.ReportContent.IncomeStatement import IncomeStatement, IncomeStatementLine

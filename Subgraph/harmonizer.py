@@ -3,7 +3,7 @@ from typing import Any, Dict, List, Optional
 
 from Class.FinancialState import FinancialReportState
 from Class.NotesExtraction.FinancialNotes import FinancialNotesExtractor
-from Subgraph.canonicalize import canonical_name
+from Subgraph.code_mapping import code_to_name
 
 def is_valid_value(val: Any) -> bool:
     if val is None:
@@ -57,7 +57,7 @@ def row_data(meta: Dict[str, Any], *, statement_type: str, report_type: str, lab
         "note_type": note_type,
         "row_label": label,
         "code": code,
-        "line_item_canonical": canonical_name(report_type, code, label),
+        "line_item_canonical": code_to_name(report_type, code, label),
         "metric": metric,
         "value": value,
         "source_page": source_page,

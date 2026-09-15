@@ -1,17 +1,15 @@
 import os
-from typing import Any, Dict, List, Optional
-import matplotlib
-import matplotlib.pyplot as plt
+from typing import Any, Dict, List
 from dotenv import load_dotenv
 from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_deepseek import ChatDeepSeek
 from langgraph.types import interrupt
 
 from Class.FinancialState import FinancialReportState
-from Subgraph.ratio_trend import period_sort_key, select_scope
+from Subgraph.charts import SUBSECTION_TITLES, to_billion
+from Subgraph.ratio_trend import build_period_dataset, period_sort_key, select_period_data, select_scope
 
 load_dotenv()
-matplotlib.use("Agg")
 llm = ChatDeepSeek(model="deepseek-v4-flash")
 
 TABLE_FIELDS: List[tuple] = [
@@ -31,19 +29,6 @@ TABLE_FIELDS: List[tuple] = [
     ("tien_cuoi_ky", "Tiền cuối kỳ"),
 ]
 
-def to_billion(value: Any, unit: str = "VND_BILLION") -> float:
-    try:
-        number = float(value)
-    except (TypeError, ValueError):
-        return 0.0
-    if unit == "VND":
-        return number / 1_000_000_000
-    if unit == "VND_THOUSAND":
-        return number / 1_000_000
-    if unit == "VND_MILLION":
-        return number / 1_000
-    return number
-
 def render_statement_tables(dataset: Dict[str, Dict[str, float]], unit: str = "VND_BILLION") -> str:
     keys = sorted((dataset or {}).keys(), key=period_sort_key)
     if not keys:
@@ -57,41 +42,46 @@ def render_statement_tables(dataset: Dict[str, Dict[str, float]], unit: str = "V
         lines.append(f"| {label} | {cells} |")
     return "\n".join(lines)
 
-def plot_metrics_by_period(dataset: Dict[str, Dict[str, float]], output_dir: str, unit: str = "VND_BILLION", filename: str = "trend_core.png") -> Optional[str]:
-    keys = sorted((dataset or {}).keys(), key=period_sort_key)
-    if not keys:
-        return None
-    
-    os.makedirs(output_dir, exist_ok=True)
-    revenue = [to_billion((dataset.get(k) or {}).get("doanh_thu") or 0.0, unit) for k in keys]
-    profit = [to_billion((dataset.get(k) or {}).get("loi_nhuan_sau_thue") or 0.0, unit) for k in keys]
+def render_chart_section(chart_map: Dict[str, List[str]], chart_paths: List[str] = None, subsection_titles: Dict[str, str] = None) -> List[str]:
+    titles = subsection_titles or SUBSECTION_TITLES
 
-    fig, ax1 = plt.subplots(figsize=(9, 4))
-    ax1.bar(keys, revenue, color="#3B82F6", alpha=0.75, label="Doanh thu")
-    ax1.set_xlabel("Kỳ")
-    ax1.set_ylabel("Doanh thu (tỷ VND)", color="#3B82F6")
-    ax2 = ax1.twinx()
-    ax2.plot(keys, profit, marker="D", color="#EF4444", linewidth=2, label="LNST")
-    ax2.set_ylabel("Lợi nhuận sau thuế (tỷ VND)", color="#EF4444")
-    plt.title("Doanh thu & Lợi nhuận sau thuế theo quý")
-    plt.grid(True, alpha=0.3)
-    ax1.tick_params(axis="x", rotation=45)
-    path = os.path.join(output_dir, filename)
-    fig.savefig(path, bbox_inches="tight", dpi=150)
-    plt.close(fig)
-    return path
+    def subsection_sort_key(section: Any) -> tuple:
+        try:
+            return tuple(int(part) for part in str(section).split("."))
+        except ValueError:
+            return (99, 99)
 
-def write_narrative_mda(dataset: Dict[str, Dict[str, float]], ratios: dict, trends: dict, flags: list, symbol: str = "", scope: str = "") -> str:
+    pairs = [
+        (section, path, titles.get(section) or f"Mục {section}")
+        for section in sorted((chart_map or {}).keys(), key=subsection_sort_key)
+        for path in (chart_map.get(section) or [])
+        if path
+    ]
+    if not pairs:
+        return ["\n## 6. Biểu đồ\n", "_Không có biểu đồ._"]
+
+    charts_root = os.path.dirname(os.path.dirname(pairs[0][1]))
+    lines: List[str] = ["\n## 6. Biểu đồ\n"]
+    lines.append(f"_Biểu đồ các chỉ số mục 1.1–1.5 (vẽ trên toàn bộ khoảng thời gian) được lưu tại `{charts_root}/`:_\n")
+    lines.extend(f"- Mục {section} — {label}: `{path}`" for section, path, label in pairs)
+    return lines
+
+def write_narrative_mda(dataset: Dict[str, Dict[str, float]], ratios: dict, trends: dict, flags: list, symbol: str = "", scope: str = "", period_key: str = "", previous_period: str = "", previous_data: dict = None, deltas: dict = None) -> str:
     prompt = f"""
-    Viết báo cáo phân tích quản trị (MD&A) bằng tiếng Việt dựa trên dữ liệu sau.
+    Viết báo cáo phân tích quản trị (MD&A) bằng tiếng Việt CHO MỘT KỲ dựa trên dữ liệu sau.
     - Doanh nghiệp: {symbol or 'N/A'} - phạm vi báo cáo: {scope or 'N/A'}
-    - Dữ liệu tài chính theo quý (đơn vị: tỷ VND): {dataset}
-    - Chỉ số (ROE, ROA, Debt/Equity, Net Margin): {ratios}
-    - Tăng trưởng QoQ/YoY/CAGR: {trends}
+    - Kỳ báo cáo: {period_key or 'N/A'}
+    - Số liệu tài chính của kỳ này (đơn vị: tỷ VND): {dataset}
+    - Chỉ số của kỳ này (ROE, ROA, Debt/Equity, Net Margin): {ratios}
+    - Kỳ trước: {previous_period or 'không có'}
+    - Số liệu kỳ trước: {previous_data if previous_data else 'không có'}
+    - Mức thay đổi so với kỳ trước: {deltas if deltas else 'không có'}
+    - Tăng trưởng của kỳ này (QoQ/YoY/CAGR): {trends}
     - Cảnh báo & bất thường: {flags}
 
-    Yêu cầu: (1) đánh giá tổng quan sức khỏe tài chính theo quý; (2) phân tích
-    nguyên nhân biến động và các cảnh báo kế toán; (3) khuyến nghị ngắn gọn.
+    Yêu cầu: (1) CHỈ phân tích số liệu của KỲ báo cáo ở trên; (2) với mỗi chỉ tiêu trọng yếu,
+    chú thích rõ chỉ tiêu đó đã thay đổi như thế nào so với kỳ trước (nếu có dữ liệu kỳ trước)
+    và nêu nguyên nhân/cảnh báo kế toán liên quan; (3) khuyến nghị ngắn gọn.
     """
     res = llm.invoke([
         SystemMessage(content="Bạn là Chuyên gia Phân tích Tài chính Cao cấp."),
@@ -106,10 +96,16 @@ def assemble_report_markdown(narrative: str, dataset: Dict[str, Dict[str, float]
                              trends: dict, flags: list, chart_paths: List[str],
                              scope_reconciliation: List[Dict[str, Any]] | None = None,
                              narrative_store: List[Dict[str, Any]] | None = None,
-                             symbol: str = "", scope: str = "", unit: str = "VND_BILLION") -> str:
+                             symbol: str = "", scope: str = "", unit: str = "VND_BILLION",
+                             chart_map: Dict[str, List[str]] | None = None,
+                             period_key: str = "", previous_period: str = "") -> str:
     keys = sorted((dataset or {}).keys(), key=period_sort_key)
     report = [f"# BÁO CÁO PHÂN TÍCH TÀI CHÍNH — {symbol or 'DOANH NGHIỆP'}"]
-    report.append(f"**Phạm vi dữ liệu:** {scope or 'n/a'} · **Số kỳ:** {len(keys)} ({keys[0] if keys else 'n/a'} → {keys[-1] if keys else 'n/a'}) · Đơn vị: tỷ VND\n")
+    if period_key:
+        compare = f" · **So sánh với:** {previous_period}" if previous_period else ""
+        report.append(f"**Phạm vi dữ liệu:** {scope or 'n/a'} · **Kỳ:** {period_key}{compare} · Đơn vị: tỷ VND\n")
+    else:
+        report.append(f"**Phạm vi dữ liệu:** {scope or 'n/a'} · **Số kỳ:** {len(keys)} ({keys[0] if keys else 'n/a'} → {keys[-1] if keys else 'n/a'}) · Đơn vị: tỷ VND\n")
 
     report.append("## 1. Phân tích Tường thuật Quản trị (MD&A)\n")
     report.append(narrative or "_Không có nội dung._")
@@ -137,12 +133,7 @@ def assemble_report_markdown(narrative: str, dataset: Dict[str, Dict[str, float]
     else:
         report.append("Không ghi nhận bất thường kế toán hoặc vi phạm đẳng thức.")
 
-    report.append("\n## 6. Biểu đồ\n")
-    if chart_paths:
-        for path in chart_paths:
-            report.append(f"![Chart]({path})")
-    else:
-        report.append("_Không có biểu đồ._")
+    report.extend(render_chart_section(chart_map, chart_paths))
 
     report.append("\n## Phụ lục A — Đối chiếu Riêng vs Hợp nhất\n")
     reconciliations = scope_reconciliation or []
@@ -168,43 +159,156 @@ def assemble_report_markdown(narrative: str, dataset: Dict[str, Dict[str, float]
         report.append("_Không có đoạn thuyết minh nào được trích._")
     return "\n".join(report)
 
+def slice_dataset(dataset: Dict[str, Dict[str, float]], period_key: str) -> Dict[str, Dict[str, float]]:
+    data = (dataset or {}).get(period_key)
+    return {period_key: data} if data is not None else {}
+
+def slice_ratios(ratios: Dict[str, Dict[str, float]], period_key: str) -> Dict[str, Dict[str, float]]:
+    out: Dict[str, Dict[str, float]] = {}
+    for name, series in (ratios or {}).items():
+        if isinstance(series, dict) and series.get(period_key) is not None:
+            out[name] = {period_key: series.get(period_key)}
+    return out
+
+def slice_trends(trends: Dict[str, Dict[str, float]], period_key: str) -> Dict[str, Dict[str, float]]:
+    out: Dict[str, Dict[str, float]] = {}
+    for field, entry in (trends or {}).items():
+        kept = {
+            key: value for key, value in (entry or {}).items()
+            if key == "CAGR_%" or key.endswith(f"_{period_key}_%")
+        }
+        if kept:
+            out[field] = kept
+    return out
+
+def slice_flags(flags: List[Dict[str, Any]], period_key: str) -> List[Dict[str, Any]]:
+    return [f for f in (flags or []) if not f.get("period_key") or str(f.get("period_key")) == str(period_key)]
+
+def slice_reconciliation(reconciliation: List[Dict[str, Any]], period_key: str) -> List[Dict[str, Any]]:
+    return [r for r in (reconciliation or []) if str(r.get("period_key")) == str(period_key)]
+
+def slice_narratives(narrative_store: List[Dict[str, Any]], period_key: str) -> List[Dict[str, Any]]:
+    return [n for n in (narrative_store or []) if str(n.get("period_key")) == str(period_key)]
+
+def previous_period_key(dataset: Dict[str, Dict[str, float]], period_key: str) -> str:
+    keys = sorted((dataset or {}).keys(), key=period_sort_key)
+    if period_key not in keys:
+        return ""
+    index = keys.index(period_key)
+    return keys[index - 1] if index > 0 else ""
+
+def period_deltas(current: Dict[str, float], previous: Dict[str, float], fields: List[str]) -> Dict[str, Dict[str, float]]:
+    deltas: Dict[str, Dict[str, float]] = {}
+    for field in fields:
+        cur = (current or {}).get(field)
+        prev = (previous or {}).get(field)
+        if cur is None or prev is None:
+            continue
+        deltas[field] = {
+            "ky_nay": round(float(cur), 2),
+            "ky_truoc": round(float(prev), 2),
+            "thay_doi": round(float(cur) - float(prev), 2),
+            "thay_doi_%": round(((cur - prev) / abs(prev)) * 100, 2) if prev else 0.0,
+        }
+    return deltas
+
+COMPARE_FIELDS: List[str] = [field for field, _ in TABLE_FIELDS]
+
 def generate_report_node(state: FinancialReportState) -> dict:
     metrics = state.get("period_metrics") or {}
-    scope, dataset = select_scope(metrics)
+    scope, fallback = select_scope(metrics)
+    dataset = build_period_dataset(metrics) or fallback
     unit = state.get("currency_unit") or "VND_BILLION"
-    batch_id = str(state.get("batch_id") or "batch")
-    out_dir = os.path.join("example_output", batch_id)
     chart_paths = list(state.get("chart_paths") or [])
+    chart_map = state.get("chart_map") or {}
+    symbol = state.get("symbol") or ""
+    flags_all = list(state.get("validation_flags") or [])
+    ratios_all = state.get("ratios") or {}
+    trends_all = state.get("trends") or {}
+    reconciliation_all = state.get("scope_reconciliation") or []
+    narratives_all = state.get("narrative_store") or []
 
-    chart = plot_metrics_by_period(dataset, out_dir, unit)
-    if chart:
-        chart_paths.append(chart)
+    if not dataset:
+        report = assemble_report_markdown(
+            "_Không có dữ liệu._", {}, {}, {}, [], chart_paths,
+            symbol=symbol, scope=scope, unit=unit, chart_map=chart_map,
+        )
+        return {"narrative_mda": "", "narratives_mda": {}, "final_report_md": report, "final_reports": {}}
 
-    flags = list(state.get("validation_flags") or [])
-    narrative = write_narrative_mda(dataset, state.get("ratios") or {}, state.get("trends") or {},
-                                    flags, state.get("symbol") or "", scope)
-    report = assemble_report_markdown(
-        narrative, dataset, state.get("ratios") or {}, state.get("trends") or {}, flags,
-        chart_paths, state.get("scope_reconciliation") or [], state.get("narrative_store") or [],
-        symbol=state.get("symbol") or "", scope=scope, unit=unit,
-    )
-    return {"narrative_mda": narrative, "final_report_md": report, "chart_paths": chart_paths}
+    reports: Dict[str, str] = {}
+    narratives: Dict[str, str] = {}
+    for period_key in sorted(dataset.keys(), key=period_sort_key):
+        period_scope = select_period_data(metrics, period_key)[0] or scope
+        previous_key = previous_period_key(dataset, period_key)
+        period_dataset = slice_dataset(dataset, period_key)
+        period_ratios = slice_ratios(ratios_all, period_key)
+        period_trends = slice_trends(trends_all, period_key)
+        period_flags = slice_flags(flags_all, period_key)
+        deltas = period_deltas(
+            dataset.get(period_key) or {},
+            (dataset.get(previous_key) or {}) if previous_key else {},
+            COMPARE_FIELDS,
+        )
+
+        narrative = write_narrative_mda(
+            period_dataset, period_ratios, period_trends, period_flags, symbol, period_scope,
+            period_key=period_key, previous_period=previous_key,
+            previous_data=dataset.get(previous_key) if previous_key else {}, deltas=deltas,
+        )
+        narratives[period_key] = narrative
+        reports[period_key] = assemble_report_markdown(
+            narrative, period_dataset, period_ratios, period_trends, period_flags,
+            chart_paths, slice_reconciliation(reconciliation_all, period_key),
+            slice_narratives(narratives_all, period_key),
+            symbol=symbol, scope=period_scope, unit=unit, chart_map=chart_map,
+            period_key=period_key, previous_period=previous_key,
+        )
+
+    first_key = sorted(reports.keys(), key=period_sort_key)[0]
+    return {
+        "narrative_mda": narratives.get(first_key, ""),
+        "narratives_mda": narratives,
+        "final_report_md": reports[first_key],
+        "final_reports": reports,
+    }
 
 def build_report_node(state: FinancialReportState) -> dict:
-    report_md = state.get("final_report_md", "")
+    reports = state.get("final_reports") or {}
     batch_id = str(state.get("batch_id") or "unknown")
     out_dir = os.path.join("example_output", batch_id)
     os.makedirs(out_dir, exist_ok=True)
-    output_path = os.path.join(out_dir, f"Bao_Cao_{batch_id}.md")
-    with open(output_path, "w", encoding="utf-8") as fh:
-        fh.write(report_md)
-    return {"output_report_path": output_path}
+
+    if not reports:
+        reports = {batch_id: state.get("final_report_md", "")}
+
+    output_paths: List[str] = []
+    for period_key, report_md in sorted(reports.items(), key=lambda item: period_sort_key(item[0])):
+        period_dir = os.path.join(out_dir, str(period_key))
+        os.makedirs(period_dir, exist_ok=True)
+        output_path = os.path.join(period_dir, f"Bao_Cao_{period_key}.md")
+        with open(output_path, "w", encoding="utf-8") as fh:
+            fh.write(report_md)
+        output_paths.append(output_path)
+
+    return {
+        "output_report_path": output_paths[0] if output_paths else None,
+        "output_report_paths": output_paths,
+    }
 
 def review_report_node(state: FinancialReportState) -> dict:
+    reports = state.get("final_reports") or {}
+    if reports:
+        preview = "\n\n".join(
+            f"### Kỳ {period_key}\n{(report_md or '')[:400]}"
+            for period_key, report_md in sorted(reports.items(), key=lambda item: period_sort_key(item[0]))
+        )[:1200]
+    else:
+        preview = (state.get("final_report_md") or "")[:1200]
     decision = interrupt({
         "type": "review_output",
         "message": "Duyệt báo cáo cuối? (approve/retry/abort)",
-        "report_preview": (state.get("final_report_md") or "")[:1200],
+        "periods": sorted(reports.keys(), key=period_sort_key),
+        "report_preview": preview,
         "flags": list(state.get("validation_flags") or [])[:10],
     })
 

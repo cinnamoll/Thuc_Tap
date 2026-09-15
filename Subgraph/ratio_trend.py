@@ -22,6 +22,20 @@ def select_scope(period_metrics: Dict[str, Any]) -> Tuple[str, Dict[str, Any]]:
     scope = sorted(period_metrics.keys())[0]
     return scope, period_metrics.get(scope) or {}
 
+def select_period_data(period_metrics: Dict[str, Any], period_key: str) -> Tuple[str, Dict[str, Any]]:
+    ordered_scopes = ["consolidated"] + [s for s in sorted(period_metrics or {}) if s != "consolidated"]
+    for scope in ordered_scopes:
+        data = ((period_metrics or {}).get(scope) or {}).get(period_key)
+        if data:
+            return scope, data
+    return "", {}
+
+def build_period_dataset(period_metrics: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
+    periods = set()
+    for periods_of_scope in (period_metrics or {}).values():
+        periods.update((periods_of_scope or {}).keys())
+    return {key: select_period_data(period_metrics, key)[1] for key in periods}
+
 def compute_period_ratios(data: Dict[str, float]) -> Dict[str, float]:
     pat = data.get("loi_nhuan_sau_thue") or 0.0
     equity = data.get("von_chu_so_huu") or 0.0
@@ -90,7 +104,8 @@ def check_period_anomalies(keys: List[str], dataset: Dict[str, Dict[str, float]]
 
 def ratio_trend_engine(state: FinancialReportState) -> dict:
     metrics = state.get("period_metrics") or {}
-    _scope, dataset = select_scope(metrics)
+    _scope, fallback = select_scope(metrics)
+    dataset = build_period_dataset(metrics) or fallback
 
     ratios: Dict[str, Dict[str, float]] = {name: {} for name in RATIO_FIELDS}
     for period_key, data in dataset.items():

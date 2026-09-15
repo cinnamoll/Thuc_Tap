@@ -1,46 +1,14 @@
-"""script.py
-
-Pipeline LangGraph: nhiều PDF báo cáo tài chính -> MỘT báo cáo phân tích đa kỳ.
-
-Luồng (``analysis_mode="deterministic"`` - mặc định, KHÔNG gọi LLM ở bước phân tích)::
-
-    START
-     -> generate_batch_id
-     -> index_files            đọc NỘI DUNG: symbol / kỳ / scope / lang / form / circular
-     -> select_files           gom theo kỳ, ưu tiên bản HỢP NHẤT
-     -> [Send] extraction_worker   song song, 1 worker cho 1 tệp
-     -> schema_harmonizer      bảng long-format theo column contract
-     -> materialize_dataset    ghi harmonized.csv + bridge state cho bộ agent
-     -> canonicalize_metrics   mã VAS -> field chuẩn; {scope: {kỳ: {field: value}}}
-     -> run_accounting_checks  đẳng thức BS / IS / CF
-     -> cross_check_scope      đối chiếu bản riêng vs hợp nhất
-     -> supervisor
-          |-- deterministic -> ratio_trend_engine
-          `-- agent         -> cleaning|eda|feature_engineering
-                              -> validation -> executor -> review -> supervisor
-     -> ratio_trend_engine     chỉ số + QoQ / YoY / CAGR THEO KỲ
-     -> generate_report
-     -> review_report          HITL: approve / retry / abort
-     -> build_report           example_output/<batch>/Bao_Cao_<batch>.md
-     -> END
-
-LƯU Ý về wiring: KHÔNG thêm static edge từ ``supervisor``/``review_report`` tới các
-nhánh của chúng. Đã kiểm chứng bằng test LangGraph độc lập rằng khi một node vừa
-có static edge vừa trả ``Command(goto=...)`` thì **tất cả** các nhánh cùng chạy.
-"""
-
 import json
 import uuid
-
 from dotenv import load_dotenv
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.graph import END, START, StateGraph
 from langgraph.types import Command, Send
 
 from Class.FinancialState import FinancialReportState
-
-from Subgraph.accounting_checks import run_accounting_checks
-from Subgraph.canonicalize import canonicalize_metrics
+# from Subgraph.accounting_checks import run_accounting_checks
+from Subgraph.code_mapping import canonicalize_metrics
+from Subgraph.charts import build_charts_node
 from Subgraph.cleaning import cleaning
 from Subgraph.cross_check import cross_check_scope
 from Subgraph.eda import eda
@@ -72,7 +40,7 @@ graph.add_node("schema_harmonizer", schema_harmonizer)
 graph.add_node("materialize_dataset", materialize_dataset)
 graph.add_node("canonicalize_metrics", canonicalize_metrics)
 
-graph.add_node("run_accounting_checks", run_accounting_checks)
+# graph.add_node("run_accounting_checks", run_accounting_checks)
 graph.add_node("cross_check_scope", cross_check_scope)
 
 graph.add_node("supervisor", supervisor_core)
@@ -84,6 +52,7 @@ graph.add_node("executor", executor_node)
 graph.add_node("review", review_execution_node)
 
 graph.add_node("ratio_trend_engine", ratio_trend_engine)
+graph.add_node("financial_charts", build_charts_node)
 graph.add_node("generate_report", generate_report_node)
 graph.add_node("review_report", review_report_node)
 graph.add_node("build_report", build_report_node)
@@ -95,8 +64,9 @@ graph.add_conditional_edges("select_files", route_to_extraction_workers, ["extra
 graph.add_edge("extraction_worker", "schema_harmonizer")
 graph.add_edge("schema_harmonizer", "materialize_dataset")
 graph.add_edge("materialize_dataset", "canonicalize_metrics")
-graph.add_edge("canonicalize_metrics", "run_accounting_checks")
-graph.add_edge("run_accounting_checks", "cross_check_scope")
+# graph.add_edge("canonicalize_metrics", "run_accounting_checks")
+# graph.add_edge("run_accounting_checks", "cross_check_scope")
+graph.add_edge("canonicalize_metrics", "cross_check_scope")
 graph.add_edge("cross_check_scope", "supervisor")
 
 graph.add_edge("cleaning", "validation")
@@ -121,7 +91,8 @@ graph.add_conditional_edges(
     }
 )
 
-graph.add_edge("ratio_trend_engine", "generate_report")
+graph.add_edge("ratio_trend_engine", "financial_charts")
+graph.add_edge("financial_charts", "generate_report")
 graph.add_edge("generate_report", "review_report")
 graph.add_conditional_edges(
     "review_report",
@@ -139,8 +110,8 @@ app = graph.compile(checkpointer=checkpointer)
 
 if __name__ == "__main__":
     thread_config = {"configurable": {"thread_id": str(uuid.uuid4())}}
-    print("  Batch PDF Financial Report Pipeline")
-    print(f"  nodes: {sorted(graph.nodes)}")
+    # print("  Batch PDF Financial Report Pipeline")
+    # print(f"  nodes: {sorted(graph.nodes)}")
 
     def handle_stream(input_data):
         for event in app.stream(input_data, config=thread_config):
@@ -213,4 +184,5 @@ if __name__ == "__main__":
             if not user_input:
                 continue
             input_files = [f.strip() for f in user_input.split(",") if f.strip()]
+            thread_config = {"configurable": {"thread_id": str(uuid.uuid4())}}
             handle_stream({"input_files": input_files, "analysis_mode": "deterministic"})

@@ -1,6 +1,5 @@
 import os
 from typing import Any, Dict, List
-
 import pandas as pd
 from langchain_core.messages import HumanMessage, SystemMessage
 
@@ -27,24 +26,48 @@ def profile_dataframe(df: pd.DataFrame) -> Dict[str, Any]:
         "n_rows": int(len(df)),
     }
 
+def write_contract_csv(df: pd.DataFrame, path: str) -> str:
+    out = df.copy()
+    for col in CONTRACT_COLUMNS:
+        if col not in out.columns:
+            out[col] = None
+    ordered = CONTRACT_COLUMNS + [c for c in out.columns if c not in CONTRACT_COLUMNS]
+    out = out[ordered]
+    if "value" in out.columns:
+        out["value"] = pd.to_numeric(out["value"], errors="coerce")
+    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+    out.to_csv(path, index=False)
+    return path
+
 def materialize_dataset(state: FinancialReportState) -> dict:
     rows = list(state.get("harmonized_dataset") or [])
     batch_id = str(state.get("batch_id") or "batch")
     out_dir = os.path.join("example_output", batch_id)
     os.makedirs(out_dir, exist_ok=True)
-    path = os.path.join(out_dir, "harmonized.csv")
 
     df = pd.DataFrame(rows)
     if df.empty:
         df = pd.DataFrame(columns=CONTRACT_COLUMNS)
-    for col in CONTRACT_COLUMNS:
-        if col not in df.columns:
-            df[col] = None
-    ordered = CONTRACT_COLUMNS + [c for c in df.columns if c not in CONTRACT_COLUMNS]
-    df = df[ordered]
-    if "value" in df.columns:
-        df["value"] = pd.to_numeric(df["value"], errors="coerce")
-    df.to_csv(path, index=False)
+
+    period_keys: List[str] = []
+    if "period_key" in df.columns:
+        period_keys = sorted({str(p) for p in df["period_key"].dropna().unique() if str(p)})
+
+    harmonized_paths: Dict[str, str] = {}
+    if period_keys:
+        for period_key in period_keys:
+            period_df = df[df["period_key"].astype(str) == period_key]
+            harmonized_paths[period_key] = write_contract_csv(period_df, os.path.join(out_dir, period_key, "harmonized.csv"))
+    else:
+        harmonized_paths["UNKNOWN"] = write_contract_csv(df, os.path.join(out_dir, "UNKNOWN", "harmonized.csv"))
+
+    if str(state.get("analysis_mode") or "") == "agent":
+        work_dir = os.path.join(out_dir, "_work")
+        shared_path = write_contract_csv(df, os.path.join(work_dir, "harmonized_all.csv"))
+        output_path = work_dir
+    else:
+        shared_path = next(iter(harmonized_paths.values()))
+        output_path = out_dir
 
     profile = profile_dataframe(df)
     periods = sorted({str(r.get("period_key")) for r in rows if r.get("period_key")})
@@ -60,10 +83,11 @@ def materialize_dataset(state: FinancialReportState) -> dict:
     )
 
     return {
-        "harmonized_path": path,
-        "file_path": path,
+        "harmonized_path": shared_path,
+        "harmonized_paths": harmonized_paths,
+        "file_path": shared_path,
         "file_format": "csv",
-        "output_path": out_dir,
+        "output_path": output_path,
         "dataset_profile": profile,
         "currency_unit": currency_unit,
         "chart_paths": [],

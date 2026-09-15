@@ -323,7 +323,7 @@ def route_tool_or_finish(state) -> Literal["feature_tools", "propose_action"]:
         return "feature_tools"
     return "propose_action"
 
-def route_after_propose(state: AgentState) -> Literal["feature_agent", END]: #type:ignore
+def route_after_propose(state: AgentState) -> Literal["feature_agent", "__end__"]: #type:ignore
     if state.get("engineer_done"):
         return END
     return "feature_agent" 
