@@ -4,6 +4,9 @@ from typing import TypedDict, Literal
 from langchain_core.messages import SystemMessage, HumanMessage
 from langchain_deepseek import ChatDeepSeek
 from langgraph.types import Command
+import os
+import json
+import re
 import uuid
 from datetime import datetime
 
@@ -16,14 +19,24 @@ class RouteDecision(TypedDict):
     next: Literal["cleaning", "eda", "feature_engineering", "ratio_trend_engine", "FINISH"]
     reason: str 
 
+def parse_json_supervisor(raw_content: str) -> dict:
+    text = raw_content.strip()
+    match = re.search(r"\{.*\}", text, re.DOTALL)
+    if match:
+        text = match.group(0)
+    try:
+        return json.loads(text)
+    except Exception:
+        return {"next": "ratio_trend_engine", "reason": "Proceeding to ratio analysis"}
+
 SUPERVISOR_PROMPT = """
     You are the Supervisor coordinating a data analysis pipeline. You MUST route tasks in strict graph sequence:
     `cleaning` -> `eda` -> `feature_engineering` -> `generate_report`
 
     **Sequential Order Rules:**
-    1. Step 1: `cleaning` (Binning, encoding, null handling, casting, and data cleaning).
-    2. Step 2: `eda` (Univariate Analysis, Multivariate Analysis, and Charting).
-    3. Step 3: `feature_engineering` (Feature transformation, creation, encoding, and selection).
+    1. Step 1: `cleaning` (Null handling, casting, OCR fix, unit standardization, identity reconciliation).
+    2. Step 2: `eda` (Univariate Analysis, Trend Analysis, Common-Size Analysis, Charting, Cross-Statement Check).
+    3. Step 3: `feature_engineering` (Standardization, growth rates, lag features, common-size transforms, cross-statement join).
     4. Step 4: `generate_report` (Generates the final comprehensive report).
 
     **Workflow Context:** 
@@ -42,14 +55,14 @@ def supervisor_core(state: AgentState):
     if run_id == "": 
         run_id = f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:6]}" 
 
-    if state.get("analysis_mode") != "agent":
-        return Command(
-            goto="ratio_trend_engine",
-            update={
-                "run_id": run_id,
-                "messages": [HumanMessage(content="[Supervisor] -> ratio_trend_engine (chế độ tất định)")],
-            },
-        )
+    # if state.get("analysis_mode") != "agent":
+    #     return Command(
+    #         goto="ratio_trend_engine",
+    #         update={
+    #             "run_id": run_id,
+    #             "messages": [HumanMessage(content="[Supervisor] -> ratio_trend_engine (chế độ tất định)")],
+    #         },
+    #     )
 
     if not state.get("cleaning_done"):
         goto = "cleaning"
@@ -61,7 +74,6 @@ def supervisor_core(state: AgentState):
         goto = "feature_engineering"
         reason = "Sequence rule: feature_engineering step required after eda."
     else:
-        llm_router = llm.with_structured_output(RouteDecision, method='json_mode')
         messages = [
             SystemMessage(content=SUPERVISOR_PROMPT),
             *state.get("messages", []),
@@ -71,7 +83,8 @@ def supervisor_core(state: AgentState):
                 "Proceed to next step"
             ))
         ]
-        decision = llm_router.invoke(messages)
+        response = llm.invoke(messages)
+        decision = parse_json_supervisor(getattr(response, "content", ""))
         goto = decision.get("next", "END")
         reason = decision.get("reason", "Proceeding to next step")
 
@@ -102,6 +115,18 @@ def supervisor_core(state: AgentState):
 def route_after_validation(state: AgentState) -> Literal["executor", "supervisor"]:
     if state.get("action_status") is False:
         return "supervisor"
+    action_type = state.get("action_type")
+    if not action_type:
+        return "supervisor"
+    pending = state.get(f"pending_{action_type}", [])
+    if not pending:
+        return "supervisor"
+    last_action = pending[-1]
+    act_type = getattr(last_action, "actionType", None)
+    col = getattr(last_action, "column", "")
+    act_type_str = str(getattr(act_type, "value", act_type)).lower()
+    if str(col).lower() == "none" or act_type_str == "none":
+        return "supervisor"
     return "executor"
 
 def route_after_review(state: AgentState) -> Literal["executor", "validation", "supervisor"]:
@@ -109,7 +134,9 @@ def route_after_review(state: AgentState) -> Literal["executor", "validation", "
         return "supervisor"
     if state.get("retry_count", 0) >= 3:
         return "supervisor"      
-    action = state['action_type']   
+    action = state.get('action_type')   
+    if not action:
+        return "supervisor"
     pending = state.get(f"pending_{action}", []) 
     current = state.get("current_action") 
     if pending and current and str(current) != str(pending[-1]): 

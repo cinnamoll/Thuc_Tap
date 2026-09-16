@@ -23,4 +23,4 @@ class EDAInsight(BaseModel):
     fiscal_year: Optional[int] = None    
     review_flag: Optional[bool] = None 
     metric_value: Annotated[Dict[str, float], "str is the metric name, float is its value"]
-    chart_paths: Annotated[List[str], dedupe_list] 
+    chart_paths: Annotated[List[str], dedupe_list] = []

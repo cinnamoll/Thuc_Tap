@@ -8,6 +8,17 @@ from Class.EDAInsight import EDAInsight, dedupe_list
 from Class.EngineeringAction import EngineeringAction
 from Class.Report import Report
 
+def merge_preview_feature(left: Optional[Union[List[Any], Any]], right: Optional[Union[List[Any], Any]]) -> List[Any]:
+    res = []
+    for val in (left, right):
+        if val is None:
+            continue
+        if isinstance(val, list):
+            res.extend(val)
+        else:
+            res.append(val)
+    return res
+
 class AgentState(TypedDict):
     messages: Annotated[Sequence[BaseMessage], add_messages]
     cols: Optional[List[str]]
@@ -25,7 +36,7 @@ class AgentState(TypedDict):
     pending_cleaning: List[CleaningAction]
     pending_insight: List[EDAInsight]
     pending_engineering: List[EngineeringAction]
-    preview_feature: Optional[list]
+    preview_feature: Annotated[List[Any], merge_preview_feature]
     chart_paths: Annotated[List[str], dedupe_list] 
     
     cleaning_done: bool

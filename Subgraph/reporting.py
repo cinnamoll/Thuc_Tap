@@ -1,5 +1,6 @@
 import os
-from typing import Any, Dict, List
+import json
+from typing import Any, Dict, List, Optional
 from dotenv import load_dotenv
 from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_deepseek import ChatDeepSeek
@@ -95,10 +96,22 @@ def write_narrative_mda(dataset: Dict[str, Dict[str, float]], ratios: dict, tren
 def assemble_report_markdown(narrative: str, dataset: Dict[str, Dict[str, float]], ratios: dict,
                              trends: dict, flags: list, chart_paths: List[str],
                              scope_reconciliation: List[Dict[str, Any]] | None = None,
-                             narrative_store: List[Dict[str, Any]] | None = None,
+                             narrative_store_path: Optional[str] = None,
                              symbol: str = "", scope: str = "", unit: str = "VND_BILLION",
                              chart_map: Dict[str, List[str]] | None = None,
-                             period_key: str = "", previous_period: str = "") -> str:
+                             period_key: str = "", previous_period: str = "",
+                             health_score: Dict[str, Any] | None = None,
+                             forecasts: Dict[str, Any] | None = None,
+                             prediction_intervals: Dict[str, Any] | None = None,
+                             scenarios: Dict[str, Any] | None = None) -> str:
+    # Load narrative store from file path if provided
+    narrative_store = []
+    if narrative_store_path and os.path.exists(narrative_store_path):
+        try:
+            with open(narrative_store_path, 'r') as f:
+                narrative_store = json.load(f)
+        except Exception:
+            narrative_store = []
     keys = sorted((dataset or {}).keys(), key=period_sort_key)
     report = [f"# BÁO CÁO PHÂN TÍCH TÀI CHÍNH — {symbol or 'DOANH NGHIỆP'}"]
     if period_key:
@@ -106,6 +119,14 @@ def assemble_report_markdown(narrative: str, dataset: Dict[str, Dict[str, float]
         report.append(f"**Phạm vi dữ liệu:** {scope or 'n/a'} · **Kỳ:** {period_key}{compare} · Đơn vị: tỷ VND\n")
     else:
         report.append(f"**Phạm vi dữ liệu:** {scope or 'n/a'} · **Số kỳ:** {len(keys)} ({keys[0] if keys else 'n/a'} → {keys[-1] if keys else 'n/a'}) · Đơn vị: tỷ VND\n")
+
+    if health_score:
+        tot = health_score.get("total_score", 0.0)
+        cat = health_score.get("risk_category", "N/A")
+        comp = health_score.get("components") or {}
+        report.append("### Thẻ điểm Sức khỏe Tài chính (Health Dashboard)")
+        report.append(f"- **Điểm tổng hợp:** `{tot}/100` · **Xếp hạng:** **{cat}**")
+        report.append(f"- **Chi tiết:** Sinh lời (`{comp.get('profitability',0)}/35`), Đòn bẩy (`{comp.get('leverage',0)}/25`), Thanh khoản (`{comp.get('liquidity',0)}/25`), Dòng tiền (`{comp.get('cash_flow',0)}/15`)\n")
 
     report.append("## 1. Phân tích Tường thuật Quản trị (MD&A)\n")
     report.append(narrative or "_Không có nội dung._")
@@ -124,6 +145,31 @@ def assemble_report_markdown(narrative: str, dataset: Dict[str, Dict[str, float]
     report.append("```json")
     report.append(f"{trends}")
     report.append("```")
+
+    if forecasts:
+        report.append("\n## 4.1. Dự báo Tài chính & Khoảng tin cậy (Forecasts & Prediction Intervals)\n")
+        report.append("| Chỉ tiêu | Dự báo Trend | Khoảng tin cậy 95% [Dưới, Trên] | San bằng mũ (SES) | Tăng trưởng kép (CAGR) |")
+        report.append("|---|---|---|---|---|")
+        for field, fc in forecasts.items():
+            pi = (prediction_intervals or {}).get(field) or {}
+            low = pi.get("lower_bound", 0.0)
+            up = pi.get("upper_bound", 0.0)
+            report.append(
+                f"| {field} | {fc.get('linear_trend', 0.0):,.1f} | [{low:,.1f}, {up:,.1f}] | "
+                f"{fc.get('exponential_smoothing', 0.0):,.1f} | {fc.get('compound_growth', 0.0):,.1f} |"
+            )
+
+    if scenarios and scenarios.get("stress_tests"):
+        report.append("\n## 4.2. Phân tích Kịch bản & Thử nghiệm Ứng suất (Stress Testing)\n")
+        report.append("| Kịch bản | Biến đổi đầu vào | Doanh thu simulated | LNST simulated | Lệch LNST |")
+        report.append("|---|---|---|---|---|")
+        for sc_name, sc_info in scenarios["stress_tests"].items():
+            sim_out = sc_info.get("simulated_outputs") or {}
+            deltas = sc_info.get("deltas_from_base") or {}
+            report.append(
+                f"| {sc_name} | {sc_info.get('modifications')} | {sim_out.get('doanh_thu', 0.0):,.1f} | "
+                f"{sim_out.get('loi_nhuan_sau_thue', 0.0):,.1f} | {deltas.get('loi_nhuan_sau_thue', 0.0):,.1f} |"
+            )
 
     report.append("\n## 5. Cảnh báo Kế toán & Bất thường\n")
     if flags:
@@ -222,11 +268,108 @@ def generate_report_node(state: FinancialReportState) -> dict:
     chart_paths = list(state.get("chart_paths") or [])
     chart_map = state.get("chart_map") or {}
     symbol = state.get("symbol") or ""
-    flags_all = list(state.get("validation_flags") or [])
-    ratios_all = state.get("ratios") or {}
-    trends_all = state.get("trends") or {}
+
+    # Read data from temporary file paths instead of state
+    import json
+    import os
+
+    # Read validation flags
+    flags_all = []
+    validation_flags_path = state.get("validation_flags_path")
+    if validation_flags_path and os.path.exists(validation_flags_path):
+        try:
+            with open(validation_flags_path, 'r') as f:
+                flags_all = json.load(f)
+        except Exception:
+            flags_all = list(state.get("validation_flags") or [])
+    else:
+        flags_all = list(state.get("validation_flags") or [])
+
+    # Read ratios
+    ratios_all = {}
+    ratios_path = state.get("ratios_path")
+    if ratios_path and os.path.exists(ratios_path):
+        try:
+            with open(ratios_path, 'r') as f:
+                ratios_all = json.load(f)
+        except Exception:
+            ratios_all = state.get("ratios") or {}
+    else:
+        ratios_all = state.get("ratios") or {}
+
+    # Read trends
+    trends_all = {}
+    trends_path = state.get("trends_path")
+    if trends_path and os.path.exists(trends_path):
+        try:
+            with open(trends_path, 'r') as f:
+                trends_all = json.load(f)
+        except Exception:
+            trends_all = state.get("trends") or {}
+    else:
+        trends_all = state.get("trends") or {}
+
+    # Read health scores
+    health_scores_all = {}
+    health_scores_path = state.get("health_scores_path")
+    if health_scores_path and os.path.exists(health_scores_path):
+        try:
+            with open(health_scores_path, 'r') as f:
+                health_scores_all = json.load(f)
+        except Exception:
+            health_scores_all = state.get("health_scores") or {}
+    else:
+        health_scores_all = state.get("health_scores") or {}
+
+    # Read forecasts
+    forecasts_all = {}
+    forecasts_path = state.get("forecasts_path")
+    if forecasts_path and os.path.exists(forecasts_path):
+        try:
+            with open(forecasts_path, 'r') as f:
+                forecasts_all = json.load(f)
+        except Exception:
+            forecasts_all = state.get("forecasts") or {}
+    else:
+        forecasts_all = state.get("forecasts") or {}
+
+    # Read prediction intervals
+    prediction_intervals_all = {}
+    prediction_intervals_path = state.get("prediction_intervals_path")
+    if prediction_intervals_path and os.path.exists(prediction_intervals_path):
+        try:
+            with open(prediction_intervals_path, 'r') as f:
+                prediction_intervals_all = json.load(f)
+        except Exception:
+            prediction_intervals_all = state.get("prediction_intervals") or {}
+    else:
+        prediction_intervals_all = state.get("prediction_intervals") or {}
+
+    # Read scenarios
+    scenarios_all = {}
+    scenarios_path = state.get("scenarios_path")
+    if scenarios_path and os.path.exists(scenarios_path):
+        try:
+            with open(scenarios_path, 'r') as f:
+                scenarios_all = json.load(f)
+        except Exception:
+            scenarios_all = state.get("scenarios") or {}
+    else:
+        scenarios_all = state.get("scenarios") or {}
+
+    # Read narrative store
+    narratives_all = []
+    narrative_store_path = state.get("narrative_store_path")
+    if narrative_store_path and os.path.exists(narrative_store_path):
+        try:
+            with open(narrative_store_path, 'r') as f:
+                narratives_all = json.load(f)
+        except Exception:
+            narratives_all = state.get("narrative_store") or []
+    else:
+        narratives_all = state.get("narrative_store") or []
+
     reconciliation_all = state.get("scope_reconciliation") or []
-    narratives_all = state.get("narrative_store") or []
 
     if not dataset:
         report = assemble_report_markdown(
@@ -259,9 +402,13 @@ def generate_report_node(state: FinancialReportState) -> dict:
         reports[period_key] = assemble_report_markdown(
             narrative, period_dataset, period_ratios, period_trends, period_flags,
             chart_paths, slice_reconciliation(reconciliation_all, period_key),
-            slice_narratives(narratives_all, period_key),
+            narrative_store_path=state.get("narrative_store_path"),
             symbol=symbol, scope=period_scope, unit=unit, chart_map=chart_map,
             period_key=period_key, previous_period=previous_key,
+            health_score=health_scores_all.get(period_key),
+            forecasts=forecasts_all,
+            prediction_intervals=prediction_intervals_all,
+            scenarios=scenarios_all,
         )
 
     first_key = sorted(reports.keys(), key=period_sort_key)[0]

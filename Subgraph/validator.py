@@ -5,11 +5,12 @@ from langchain_core.tools import tool
 from langgraph.types import interrupt
 from pydantic import ValidationError
 import pandas as pd
+import os
 
 from Class.AgentState import AgentState
 from Class.CleaningAction import CleaningAction, CleaningActionType
 from Class.EDAInsight import EDAInsight
-from Class.EngineeringAction import EngineeringAction, EncodingType, BinningType, FinancialFeatureType
+from Class.EngineeringAction import EngineeringAction, BinningType, FinancialFeatureType
 from Subgraph.cleaning import cleaning
 from Subgraph.eda import eda 
 from Subgraph.feature import feature_engineering
@@ -47,10 +48,10 @@ def compute_impact_cleaning(action: CleaningAction, dataset_profile: dict) -> di
 
 @tool
 def compute_impact_engineering(action: EngineeringAction, dataset_profile: dict) -> dict:
-    """This tool compute risk level of Encoding or Binning action in a column
+    """This tool compute risk level of Financial or Binning action in a column
 
     Args:
-        action (EngineeringAction): Provide what type of encoding / binning action
+        action (EngineeringAction): Provide what type of financial / binning action
         dataset_profile (dict): metadata about the column
 
     Returns:
@@ -60,12 +61,8 @@ def compute_impact_engineering(action: EngineeringAction, dataset_profile: dict)
     stats = dataset_profile.get("stats", {})
     null_count = stats.get(f"{action.column}_nulls", 0)
 
-    if action.actionType in (EncodingType.LABEL, EncodingType.ORDINAL):
-        affected = null_count
-    elif action.actionType == EncodingType.ONE_HOT:
-        affected = stats.get(f"{action.column}_nunique", 0)
-    elif action.actionType in (BinningType.EQUAL, BinningType.QUANTILE): 
-        affected = null_count  
+    if action.actionType == BinningType.STANDARD:
+        affected = total_rows
     elif isinstance(action.actionType, FinancialFeatureType):
         affected = total_rows  
     else:
@@ -196,16 +193,16 @@ def risk_node(state: AgentState) -> dict:
     return {"risk_level": risk_levels}
 
 def validator_node(state: AgentState) -> dict:
-    computed_list = state.get("computed_impact", []) 
+    computed_list = state.get("computed_impact", [])
     if state['action_type'] == 'cleaning':
         actions = state.get('pending_cleaning', [])
     elif state['action_type'] == 'engineering':
         actions = state.get('pending_engineering', [])
-    elif state['action_type'] == 'insight':  
-        actions = state.get('pending_insight', []) 
-    else: 
-        actions = [] 
-        
+    elif state['action_type'] == 'insight':
+        actions = state.get('pending_insight', [])
+    else:
+        actions = []
+
     valid_cols = get_valid_columns(state)
 
     for action in actions:
@@ -215,7 +212,7 @@ def validator_node(state: AgentState) -> dict:
             return {"validation": False, "validation_error": "schema_invalid"}
 
         act_type = getattr(action, "actionType", None)
-        if isinstance(action, EDAInsight) or act_type == CleaningActionType.NONE or act_type == EncodingType.NONE or act_type == BinningType.NONE or act_type == FinancialFeatureType.NONE:
+        if isinstance(action, EDAInsight) or act_type == CleaningActionType.NONE or act_type == BinningType.NONE or act_type == FinancialFeatureType.NONE:
             continue
 
         if valid_cols and action.column and action.column not in valid_cols:
@@ -226,8 +223,43 @@ def validator_node(state: AgentState) -> dict:
         if action.rows_affected != computed.get("rows_affected", 0):
             return {"validation": False,  "validation_error": f"LLM reported {action.rows_affected} but system computed {computed.get('rows_affected', 0)} rows affected for {action.column}."}
 
-    harmonized = state.get("harmonized_dataset", [])
-    acct_flags = list(state.get("validation_flags") or [])
+    # Read harmonized dataset from file path
+    harmonized_path = state.get("harmonized_dataset_path")
+    harmonized = []
+    if harmonized_path and os.path.exists(harmonized_path):
+        import pandas as pd
+        df = pd.read_csv(harmonized_path)
+        harmonized = df.to_dict('records')
+
+    # Read validation flags and health scores from file paths
+    import json
+    import os
+
+    # Read validation flags
+    validation_flags = []
+    validation_flags_path = state.get("validation_flags_path")
+    if validation_flags_path and os.path.exists(validation_flags_path):
+        try:
+            with open(validation_flags_path, 'r') as f:
+                validation_flags = json.load(f)
+        except Exception:
+            validation_flags = list(state.get("validation_flags") or [])
+    else:
+        validation_flags = list(state.get("validation_flags") or [])
+
+    # Read health scores
+    health_scores = {}
+    health_scores_path = state.get("health_scores_path")
+    if health_scores_path and os.path.exists(health_scores_path):
+        try:
+            with open(health_scores_path, 'r') as f:
+                health_scores = json.load(f)
+        except Exception:
+            health_scores = state.get("health_scores") or {}
+    else:
+        health_scores = state.get("health_scores") or {}
+
+    acct_flags = list(validation_flags)
     if harmonized and isinstance(harmonized, list):
         from collections import defaultdict
         from Subgraph.code_mapping import PERIOD_METRIC
@@ -246,7 +278,7 @@ def validator_node(state: AgentState) -> dict:
             if flag:
                 acct_flags.append(flag)
 
-    return {"validation": True, "validation_error": None, "validation_flags": acct_flags}
+    return {"validation": True, "validation_error": None, "validation_flags": acct_flags, "health_scores": health_scores}
 
 def repair_node(state: AgentState) -> dict:
     error = state.get("validation_error", "Output has incorrect format or incorrect stats")

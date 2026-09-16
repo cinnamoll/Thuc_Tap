@@ -1,3 +1,7 @@
+import os
+import uuid
+import json
+import pandas as pd
 from dotenv import load_dotenv
 from langgraph.graph import StateGraph, START, END
 from typing import Literal, Annotated
@@ -5,81 +9,34 @@ from langchain_core.messages import SystemMessage, ToolMessage, HumanMessage
 from langchain_deepseek import ChatDeepSeek
 from langgraph.prebuilt import ToolNode
 from langchain_core.tools import tool, InjectedToolCallId
-import pandas as pd
+import re
 from langgraph.types import Command
 
 from Class.AgentState import AgentState
-from Class.EngineeringAction import EngineeringAction, EncodingType, BinningType, FinancialFeatureType
+from Class.EngineeringAction import EngineeringAction, BinningType, FinancialFeatureType
 
 load_dotenv()
 llm = ChatDeepSeek(model="deepseek-v4-flash")
-
-@tool 
-def preview_encoding_tool(file_path: str, file_format: str, column: str, encode: EncodingType, tool_call_id: Annotated[str, InjectedToolCallId], length: int=20) -> str:
-    """
-    Apply this tool only to categorical data columns to encoding:
-    Args:
-        file_path (str): path to the dataset file
-        column (str): name of the categorical column to analyze
-        encode (EngineeringType.BINNING): type of encoding to use
-        length (int): length of binning dataframe head
-
-    Returns:
-        - new Encoded column head
-    """    
-    df = pd.read_csv(file_path)
-    if column not in df.columns:
-        return f"'{column}' not found in dataset."
-
-    dtype = df[column].dtype
-    if pd.api.types.is_numeric_dtype(dtype) and not isinstance(dtype, pd.CategoricalDtype):
-        return f"'{column}' is not a nominal/categorical type (dtype={dtype})"
-    
-    df = df[[column]].head(length).copy()
-    
-    if encode == 'frequency_encoding':
-        freq_map = df[column].value_counts(normalize=True)
-        encoded_df = df.copy()
-        encoded_df[f'{column}_encoded'] = df[column].map(freq_map)
-    elif encode == 'label_encoding':
-        codes, _ = pd.factorize(df[column])
-        encoded_df = df.copy()
-        encoded_df[f'{column}_encoded'] = codes
-    elif encode == 'ordinal_encoding':
-        unique_vals = sorted(df[column].dropna().unique())
-        mapping = {val: i for i, val in enumerate(unique_vals)}
-        encoded_df = df.copy()
-        encoded_df[f'{column}_encoded'] = df[column].map(mapping).astype('Int32')
-    elif encode == 'one_hot_encoding':
-        encoded_df = pd.get_dummies(df, columns=[column])
-    else: 
-        return "Unsupported encode type"   
-    
-    res = {
-        "Target Column": column,
-        "Method": encode,
-        f"First {length} rows": encoded_df.to_string(index=False)
-    }
-    
-    return Command(update={"preview_feature": res, "messages": [ToolMessage(content="Encoding complete " + str(res), tool_call_id=tool_call_id)]})
 
 @tool
 def preview_binning_standard_tool(file_path: str, column: str, encode: BinningType, tool_call_id: Annotated[str, InjectedToolCallId], n_bin: int=10, length: int=20) -> str:
     """
     Apply this tool only to continuos data columns to binned / standardized:
-        - Use result from univariate_analyst_ as input to suggest encoding plans
+        - Use result from univariate_analyst_ as input to suggest binning plans
 
     Args:
         file_path (str): path to the dataset file
         column (str): name of the continuos column to analyze
         n_bin (str): number of bins
-        encode (EngineeringType.BINNING): type of encoding to use
+        encode (EngineeringType.BINNING): type of binning to use
         length (int): length of binning dataframe head
 
     Returns:
         - A new Binned column head
     """
     
+    if not file_path or not os.path.exists(file_path):
+        return Command(update={"messages": [ToolMessage(content=f"Dataset file '{file_path}' not found.", tool_call_id=tool_call_id)]})
     df = pd.read_csv(file_path)
     if column not in df.columns:
         return f"'{column}' not found in dataset."
@@ -97,18 +54,6 @@ def preview_binning_standard_tool(file_path: str, column: str, encode: BinningTy
             new_df[f"{column}_std"] = (df[column] - mean) / std
         else:
             return "Std is None. No binning with this column"
-    elif encode == 'equal_width':
-        min_val = df[column].min()
-        max_val = df[column].max()
-        
-        step = (max_val - min_val) / n_bin
-        breaks = [min_val + i * step for i in range(1, n_bin)]
-        
-        new_df = df.copy()
-        new_df[f"{column}_binned"] = pd.cut(df[column], bins=[min_val] + breaks + [max_val], include_lowest=True)
-    elif encode == 'quantile':
-        new_df = df.copy()
-        new_df[f"{column}_binned"] = pd.qcut(df[column], q=n_bin, duplicates='drop')
     else: 
         return "Unsupported binning type" 
     
@@ -232,14 +177,30 @@ def preview_cross_statement_join_tool(file_path: str, join_key: str, tool_call_i
     res = {"Join Key": join_key, "Method": "cross_statement_join", f"First {length} rows": preview.to_string(index=False)}
     return Command(update={"preview_feature": res, "messages": [ToolMessage(content="Cross-statement join preview: " + str(res), tool_call_id=tool_call_id)]})
 
-feature_tools = [preview_encoding_tool, preview_binning_standard_tool, preview_growth_rate_tool, preview_lag_feature_tool, preview_common_size_tool, preview_cross_statement_join_tool]
+feature_tools = [preview_binning_standard_tool, preview_growth_rate_tool, preview_lag_feature_tool, preview_common_size_tool, preview_cross_statement_join_tool]
 tool_node = ToolNode(feature_tools)
 feature_llm = llm.bind_tools(tools=feature_tools)
 feature_tools_dict = {feature_tool.name: feature_tool for feature_tool in feature_tools}
 
 def feature_agent_node(state: AgentState):
-    response = feature_llm.invoke(state['messages'])
+    file_path = state.get('file_path', '')
+    file_path_prompt = SystemMessage(
+        content=f"The target dataset file_path is: '{file_path}'. "
+                f"When calling tools, you MUST pass file_path='{file_path}'."
+    )
+    response = feature_llm.invoke([file_path_prompt] + list(state['messages']))
     return {'messages': [response]} 
+
+def parse_json_feature(raw_content: str) -> EngineeringAction:
+    text = raw_content.strip()
+    match = re.search(r"\{.*\}", text, re.DOTALL)
+    if match:
+        text = match.group(0)
+    try:
+        data = json.loads(text)
+        return EngineeringAction.model_validate(data)
+    except Exception:
+        return EngineeringAction(actionType=FinancialFeatureType.NONE)
 
 def propose_action_node(state: AgentState) -> AgentState:
     messages = state['messages']
@@ -257,63 +218,58 @@ def propose_action_node(state: AgentState) -> AgentState:
 
     system_prompt = SystemMessage(
         content=f"""
-        You are a data feature engineering INVESTIGATION agent. You do NOT execute any transformation 
+        You are a data feature engineering INVESTIGATION agent. You do NOT execute any transformation
         action.
         Required procedure:
         1. Valid columns in dataset: {valid_cols}. You MUST select 'column' strictly from this list. Do NOT invent non-existent column names (e.g. 'id').
-        2. Call the encoding tool for categorical columns and preview the column(s) head after encoding; 
-        call the standardization or binning tool for numerical columns and preview the column(s) head 
+        2. Call the standardization tool for numerical columns and preview the column(s) head
         after transformation.
         3. For financial time-series data, prefer the financial feature tools:
            - `preview_growth_rate_tool`: YoY/QoQ growth rates per line item
            - `preview_lag_feature_tool`: previous period values
            - `preview_common_size_tool`: % of total assets/revenue
            - `preview_cross_statement_join_tool`: prepare join of BS+IS+CF by period key
-        4. Look at the actions already covered in 'Already proposed actions' below — do NOT propose 
+        4. Look at the actions already covered in 'Already proposed actions' below — do NOT propose
         an action for a target that already has one, unless explicitly asked to redo it.
-        5. Pick exactly ONE remaining column/transformation with the most impactful unresolved issue 
+        5. Pick exactly ONE remaining column/transformation with the most impactful unresolved issue
         and propose a single EngineeringAction for it.
-        6. If every column has already been adequately transformed, or there is nothing further worth 
+        6. If every column has already been adequately transformed, or there is nothing further worth
         proposing, return a JSON object with "actionType": "none" to signal completion.
-        
+
         IMPORTANT RULES FOR FINANCIAL DATA (Long-format):
         - DO NOT propose standard financial ratios (e.g. ROE, ROA, Debt-to-Equity). These are handled by a dedicated `ratio_trend_engine`.
-        - EncodingType (label/ordinal/frequency/one-hot) is RESTRICTED to metadata columns only (statement_type, industry, period).
-        - BinningType: only 'standardize' is valid for accounting data. Do NOT use 'equal_width' or 'quantile' on core financial figures.
+        - Binning (equal_width/quantile) are DISALLOWED on financial data.
+        - BinningType: only 'standardize' is valid for accounting data.
         - Prefer FinancialFeatureType actions: derive_growth_rate, common_size_transform, lag_feature, cross_statement_join.
-        
-        Valid actionType values: "label_encoding", "ordinal_encoding", "frequency_encoding", "one_hot_encoding", 
-        "equal_width", "quantile", "standardize", "derive_growth_rate", "common_size_transform", "lag_feature", "cross_statement_join", "none"
+
+        Valid actionType values: "standardize", "derive_growth_rate", "common_size_transform", "lag_feature", "cross_statement_join", "none"
         """
     )
-    structured_llm = llm.with_structured_output(EngineeringAction, method='json_mode')
-    res = structured_llm.invoke(
-        [system_prompt] + 
-        [HumanMessage(content=f"Valid dataset columns: {valid_cols}")] + 
+    response = llm.invoke(
+        [system_prompt] +
+        [HumanMessage(content=f"Valid dataset columns: {valid_cols}")] +
         messages + [HumanMessage(content=
             f"""Already proposed actions (column, line_item_canonical, actionType): {covered_actions}
-            Summarize as JSON matching schema for ONE action only:
-            {{"file_path": "{file_path}", "file_format": "{file_format}", "reason": str, "column": str, "line_item_canonical": str|null, 
-            "statement_type": str|null, "period": str|null, "fiscal_year": int|null,
-            "rows_affected": int | null, "rows_ratio": float | null,
-            "risk_level": "low" | "medium" | "high" | null, 
-            "actionType": "label_encoding"|"ordinal_encoding"|"frequency_encoding"|"one_hot_encoding"|"equal_width"|"quantile"|"standardize"|"derive_growth_rate"|"common_size_transform"|"lag_feature"|"cross_statement_join"|"none", 
-            "n_bin": int, "base_item": str|null, "time_column": str|null}}\n
+            Summarize as raw JSON matching schema for ONE action only:
+            Example JSON format:
+            {{"file_path": "{file_path}", "file_format": "{file_format}", "reason": "feature engineering", "column": "value", "line_item_canonical": "tong_tai_san", "statement_type": "balance_sheet", "period": "2024Q4", "fiscal_year": 2024, "rows_affected": 0, "rows_ratio": 0.0, "risk_level": "low", "actionType": "none", "n_bin": 10, "base_item": null, "time_column": null}}
             Preview the column for user using {state.get('preview_feature', '')}
             """
         )]
     )
+    res = parse_json_feature(getattr(response, "content", ""))
     if not res.file_path:
         res.file_path = file_path
     if not res.file_format:
         res.file_format = file_format
 
-    summary = "\n".join(f"- {a.column} ({a.line_item_canonical}): {a.actionType}" for a in existing_actions)
-    if res.actionType in (EncodingType.NONE, BinningType.NONE, FinancialFeatureType.NONE): 
+    all_actions = existing_actions + [res]
+    summary = "\n".join(f"- {a.column} ({a.line_item_canonical}): {a.actionType}" for a in all_actions)
+    if res.actionType in (BinningType.NONE, FinancialFeatureType.NONE):
         return Command(update={"engineer_done": True})
 
     return Command(update={
-        "pending_engineering": existing_actions + [res],
+        "pending_engineering": all_actions,
         "messages": [HumanMessage(content=summary)]
     })
 

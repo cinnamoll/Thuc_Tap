@@ -18,6 +18,9 @@ from Subgraph.feature import feature_engineering
 from Subgraph.harmonizer import schema_harmonizer
 from Subgraph.indexing import build_batch, index_files, select_files
 from Subgraph.materialize import materialize_dataset
+from Subgraph.financial_validation import financial_validation_node
+from Subgraph.financial_forecasting import financial_forecasting_node
+from Subgraph.scenario_analysis import scenario_analysis_node
 from Subgraph.ratio_trend import ratio_trend_engine
 from Subgraph.reporting import build_report_node, generate_report_node, review_report_node, route_after_report_review
 from Subgraph.supervisor import route_after_review, route_after_validation, supervisor_core
@@ -40,8 +43,10 @@ graph.add_node("schema_harmonizer", schema_harmonizer)
 graph.add_node("materialize_dataset", materialize_dataset)
 graph.add_node("canonicalize_metrics", canonicalize_metrics)
 
-# graph.add_node("run_accounting_checks", run_accounting_checks)
+graph.add_node("financial_validation", financial_validation_node)
 graph.add_node("cross_check_scope", cross_check_scope)
+graph.add_node("financial_forecasting", financial_forecasting_node)
+graph.add_node("scenario_analysis", scenario_analysis_node)
 
 graph.add_node("supervisor", supervisor_core)
 graph.add_node("cleaning", cleaning)
@@ -64,10 +69,11 @@ graph.add_conditional_edges("select_files", route_to_extraction_workers, ["extra
 graph.add_edge("extraction_worker", "schema_harmonizer")
 graph.add_edge("schema_harmonizer", "materialize_dataset")
 graph.add_edge("materialize_dataset", "canonicalize_metrics")
-# graph.add_edge("canonicalize_metrics", "run_accounting_checks")
-# graph.add_edge("run_accounting_checks", "cross_check_scope")
-graph.add_edge("canonicalize_metrics", "cross_check_scope")
-graph.add_edge("cross_check_scope", "supervisor")
+graph.add_edge("canonicalize_metrics", "financial_validation")
+graph.add_edge("financial_validation", "cross_check_scope")
+graph.add_edge("cross_check_scope", "financial_forecasting")
+graph.add_edge("financial_forecasting", "scenario_analysis")
+graph.add_edge("scenario_analysis", "supervisor")
 
 graph.add_edge("cleaning", "validation")
 graph.add_edge("eda", "validation")
@@ -185,4 +191,4 @@ if __name__ == "__main__":
                 continue
             input_files = [f.strip() for f in user_input.split(",") if f.strip()]
             thread_config = {"configurable": {"thread_id": str(uuid.uuid4())}}
-            handle_stream({"input_files": input_files, "analysis_mode": "deterministic"})
+            handle_stream({"input_files": input_files, "analysis_mode": "agent"})

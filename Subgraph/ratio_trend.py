@@ -1,10 +1,15 @@
+import math
 import re
+import json
+import os
+import uuid
 from typing import Any, Dict, List, Tuple
 
 from Class.FinancialState import FinancialReportState
 
 RATIO_FIELDS = ("ROE", "ROA", "Debt_to_Equity", "Net_Margin")
 TREND_FIELDS = ("doanh_thu", "loi_nhuan_sau_thue", "tong_tai_san")
+BENFORD_EXPECTED_DISTRIBUTION = [0.301, 0.176, 0.125, 0.097, 0.079, 0.067, 0.058, 0.051, 0.046]
 
 def period_sort_key(period_key: Any) -> Tuple[int, int]:
     text = str(period_key or "")
@@ -82,6 +87,42 @@ def compute_period_trends(dataset: Dict[str, Dict[str, float]]) -> Dict[str, Dic
         trends[field] = entry
     return trends
 
+def calculate_statistical_control_bounds(values: List[float], n_std: float = 2.0) -> Tuple[float, float, float]:
+    if not values:
+        return 0.0, 0.0, 0.0
+    mean_val = sum(values) / len(values)
+    variance = sum((v - mean_val) ** 2 for v in values) / max(1, len(values))
+    std_dev = math.sqrt(variance)
+    return mean_val, mean_val + n_std * std_dev, mean_val - n_std * std_dev
+
+def check_benford_law_anomalies(dataset: Dict[str, Dict[str, float]]) -> List[Dict[str, Any]]:
+    flags: List[Dict[str, Any]] = []
+    first_digits = []
+    for period_data in dataset.values():
+        for val in period_data.values():
+            if val and abs(val) >= 1.0:
+                s = f"{abs(val):.6e}".lstrip("0.")
+                first_digit = int(s[0])
+                if 1 <= first_digit <= 9:
+                    first_digits.append(first_digit)
+
+    if len(first_digits) < 20:
+        return flags
+
+    counts = [first_digits.count(d) for d in range(1, 10)]
+    total = len(first_digits)
+    observed_freq = [c / total for c in counts]
+
+    chi_sq = sum(((obs - exp) ** 2) / exp for obs, exp in zip(observed_freq, BENFORD_EXPECTED_DISTRIBUTION))
+    if chi_sq > 0.15:
+        flags.append({
+            "flag_type": "benford_law_anomaly",
+            "field": "all_financial_items",
+            "message": f"Phân bố chữ số đầu tiên sai lệch so với luật Benford (Chi-sq diff: {chi_sq:.3f})",
+            "severity": "LOW",
+        })
+    return flags
+
 def check_period_anomalies(keys: List[str], dataset: Dict[str, Dict[str, float]], threshold: float = 0.5) -> List[Dict[str, Any]]:
     flags: List[Dict[str, Any]] = []
     for i in range(1, len(keys)):
@@ -100,6 +141,23 @@ def check_period_anomalies(keys: List[str], dataset: Dict[str, Dict[str, float]]
                     "message": f"Biến động quý {cur_key} của {field}: {change * 100:+.1f}%",
                     "severity": "MEDIUM",
                 })
+
+    for field in TREND_FIELDS:
+        series = [dataset[k].get(field) or 0.0 for k in keys if dataset[k].get(field) is not None]
+        if len(series) >= 3:
+            mean_v, ucl, lcl = calculate_statistical_control_bounds(series)
+            for k in keys:
+                v = dataset[k].get(field) or 0.0
+                if v > ucl or v < lcl:
+                    flags.append({
+                        "period_key": k,
+                        "flag_type": "statistical_control_outlier",
+                        "field": field,
+                        "message": f"Giá trị {field} ({v:,.0f}) nằm ngoài khoảng kiểm soát thống kê 2-sigma [{lcl:,.0f}, {ucl:,.0f}]",
+                        "severity": "MEDIUM",
+                    })
+
+    flags.extend(check_benford_law_anomalies(dataset))
     return flags
 
 def ratio_trend_engine(state: FinancialReportState) -> dict:
@@ -118,4 +176,28 @@ def ratio_trend_engine(state: FinancialReportState) -> dict:
     flags = list(state.get("validation_flags") or [])
     flags.extend(check_period_anomalies(keys, dataset))
 
-    return {"ratios": ratios, "trends": trends, "validation_flags": flags}
+    # Create temporary directory for ratio trend data
+    batch_id = state.get("batch_id", "unknown")
+    temp_dir = os.path.join("temp_data", batch_id)
+    os.makedirs(temp_dir, exist_ok=True)
+
+    # Write ratios to temporary file
+    ratios_file = os.path.join(temp_dir, "ratios.json")
+    with open(ratios_file, 'w') as f:
+        json.dump(ratios, f, ensure_ascii=False, indent=2)
+
+    # Write trends to temporary file
+    trends_file = os.path.join(temp_dir, "trends.json")
+    with open(trends_file, 'w') as f:
+        json.dump(trends, f, ensure_ascii=False, indent=2)
+
+    # Write flags to temporary file
+    flags_file = os.path.join(temp_dir, "validation_flags.json")
+    with open(flags_file, 'w') as f:
+        json.dump(flags, f, ensure_ascii=False, indent=2)
+
+    return {
+        "ratios_path": ratios_file,
+        "trends_path": trends_file,
+        "validation_flags_path": flags_file
+    }

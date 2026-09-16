@@ -39,6 +39,16 @@ class FinancialReportState(AgentState, total=False):
     narrative_store: List[Dict[str, Any]]
     harmonized_path: Optional[str]
     harmonized_paths: Dict[str, str]
+    harmonized_dataset_path: Optional[str]  # Path to temporary harmonized dataset file
+    narrative_store_path: Optional[str]    # Path to temporary narrative store file
+    engineered_features_path: Optional[str]  # Path to temporary engineered features file
+    validation_results_path: Optional[str]   # Path to temporary validation results file
+    forecasts_path: Optional[str]            # Path to temporary forecasts file
+    scenarios_path: Optional[str]            # Path to temporary scenarios file
+    ratios_path: Optional[str]               # Path to temporary ratios file
+    trends_path: Optional[str]               # Path to temporary trends file
+    health_scores_path: Optional[str]        # Path to temporary health scores file
+    prediction_intervals_path: Optional[str] # Path to temporary prediction intervals file
     period_metrics: Dict[str, Dict[str, Dict[str, float]]]
     currency_unit: str
 
@@ -46,6 +56,11 @@ class FinancialReportState(AgentState, total=False):
     ratios: Dict[str, Dict[str, float]]
     trends: Dict[str, Dict[str, float]]
     chart_map: Dict[str, List[str]]
+
+    health_scores: Dict[str, Dict[str, Any]]
+    forecasts: Dict[str, Dict[str, Any]]
+    prediction_intervals: Dict[str, Dict[str, Any]]
+    scenarios: Dict[str, Dict[str, Any]]
 
     narrative_mda: str
     narratives_mda: Dict[str, str]

@@ -1,4 +1,5 @@
 from typing import Any, Dict, List, Optional
+import os
 
 from Class.FinancialState import FinancialReportState
 from Class.TableExtractor import fold_text, match_pl_field
@@ -83,7 +84,14 @@ def code_to_name(report_type: str, code: Optional[str], row_label: Optional[str]
     return f"code_{code}" if code else "unknown"
 
 def canonicalize_metrics(state: FinancialReportState) -> dict:
-    rows: List[Dict[str, Any]] = list(state.get("harmonized_dataset") or [])
+    # Read harmonized dataset from file path instead of state
+    harmonized_path = state.get("harmonized_dataset_path")
+    rows: List[Dict[str, Any]] = []
+    if harmonized_path and os.path.exists(harmonized_path):
+        import pandas as pd
+        df = pd.read_csv(harmonized_path)
+        rows = df.to_dict('records')
+
     period_metrics: Dict[str, Dict[str, Dict[str, float]]] = {}
 
     for row in rows:

@@ -2,16 +2,7 @@ from pydantic import field_validator, BaseModel
 from typing import Literal, Optional
 from enum import Enum
 
-class EncodingType(str, Enum):
-    LABEL = "label_encoding" 
-    ORDINAL = "ordinal_encoding"
-    FREQUENCY = "frequency_encoding"
-    ONE_HOT = "one_hot_encoding"
-    NONE = "none"
-
 class BinningType(str, Enum):
-    EQUAL = "equal_width" 
-    QUANTILE = "quantile"
     STANDARD = "standardize"
     NONE = "none"
 
@@ -34,7 +25,7 @@ class EngineeringAction(BaseModel):
     rows_affected: Optional[int] = None
     rows_ratio: Optional[float] = None
     risk_level: Optional[Literal["low", "medium", "high"]] = None
-    actionType: EncodingType | BinningType | FinancialFeatureType
+    actionType: BinningType | FinancialFeatureType
     n_bin: int = 10
     base_item: Optional[str] = None     
     time_column: Optional[str] = None 

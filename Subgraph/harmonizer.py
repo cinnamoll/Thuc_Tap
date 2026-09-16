@@ -1,4 +1,6 @@
 import re
+import os
+import json
 from typing import Any, Dict, List, Optional
 
 from Class.FinancialState import FinancialReportState
@@ -121,7 +123,7 @@ def schema_harmonizer(state: FinancialReportState) -> dict:
 
     mapper = FinancialNotesExtractor().heading_mapper
     section_no_re = getattr(mapper, "SECTION_NO", None)
-    
+
     for note in state.get("financial_data") or []:
         meta = meta_for(note.get("scope"), note.get("period_key"), note.get("year"))
         tables = note.get("tables") or {}
@@ -174,4 +176,32 @@ def schema_harmonizer(state: FinancialReportState) -> dict:
                         "text": tr.get("text", ""),
                     })
 
-    return {"harmonized_dataset": rows, "narrative_store": narrative_store}
+    # Write harmonized dataset to temporary file instead of keeping in state
+    if rows:
+        import pandas as pd
+        import json
+        import os
+        from datetime import datetime
+
+        # Create temporary directory for harmonized data
+        batch_id = state.get("batch_id", "unknown")
+        temp_dir = os.path.join("temp_data", batch_id)
+        os.makedirs(temp_dir, exist_ok=True)
+
+        # Write as CSV for efficiency
+        df = pd.DataFrame(rows)
+        harmonized_file = os.path.join(temp_dir, "harmonized_dataset.csv")
+        df.to_csv(harmonized_file, index=False)
+
+        # Also save narrative store as JSON
+        narrative_file = os.path.join(temp_dir, "narrative_store.json")
+        with open(narrative_file, 'w') as f:
+            json.dump(narrative_store, f, ensure_ascii=False, indent=2)
+
+        return {
+            "harmonized_dataset_path": harmonized_file,
+            "narrative_store_path": narrative_file,
+            "narrative_store": []  # Keep empty in state to avoid duplication
+        }
+    else:
+        return {"harmonized_dataset_path": "", "narrative_store_path": "", "narrative_store": []}

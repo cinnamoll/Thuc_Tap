@@ -5,6 +5,8 @@ from langchain_core.messages import SystemMessage, ToolMessage, HumanMessage
 from langchain_deepseek import ChatDeepSeek
 from langchain_core.tools import tool, InjectedToolCallId
 from langgraph.prebuilt import ToolNode 
+import json
+import re
 import pandas as pd
 from langgraph.types import Command
 
@@ -14,6 +16,8 @@ from Class.CleaningAction import CleaningAction, CleaningActionType
 load_dotenv()
 llm = ChatDeepSeek(model="deepseek-v4-flash")
 
+import os
+
 @tool
 def profile_dataset(file_path: str, tool_call_id: Annotated[str, InjectedToolCallId]) -> dict:
     """
@@ -21,7 +25,16 @@ def profile_dataset(file_path: str, tool_call_id: Annotated[str, InjectedToolCal
     dtypes, number of nulls for both numerical and categorical columns and unique values for categorical column.
     Used to detect problems before suggesting cleaning.
     """
-    df = pd.read_csv(file_path)
+    if not file_path or not os.path.exists(file_path):
+        res = {"error": f"Dataset file '{file_path}' not found."}
+        return Command(update={"messages": [ToolMessage(content=str(res), tool_call_id=tool_call_id)]})
+
+    try:
+        df = pd.read_csv(file_path)
+    except Exception as e:
+        res = {"error": f"Failed to read dataset file '{file_path}': {e}"}
+        return Command(update={"messages": [ToolMessage(content=str(res), tool_call_id=tool_call_id)]})
+
     stats = {}
     for col in df.columns:
         stats[f"{col}_nulls"] = int(df[col].isnull().sum())
@@ -42,8 +55,24 @@ cleaning_llm = llm.bind_tools(cleaning_tools)
 cleaning_tools_dict = {cleaning_tool.name: cleaning_tool for cleaning_tool in cleaning_tools}
 
 def data_cleaning_node(state:AgentState):
-    response = cleaning_llm.invoke(state['messages'])
+    file_path = state.get('file_path', '')
+    file_path_prompt = SystemMessage(
+        content=f"The target dataset file_path is: '{file_path}'. "
+                f"When calling tool 'profile_dataset', you MUST pass file_path='{file_path}'."
+    )
+    response = cleaning_llm.invoke([file_path_prompt] + list(state['messages']))
     return {'messages': [response]}    
+
+def parse_json_cleaning(raw_content: str) -> CleaningAction:
+    text = raw_content.strip()
+    match = re.search(r"\{.*\}", text, re.DOTALL)
+    if match:
+        text = match.group(0)
+    try:
+        data = json.loads(text)
+        return CleaningAction.model_validate(data)
+    except Exception:
+        return CleaningAction(actionType=CleaningActionType.NONE)
 
 def propose_action_node(state: AgentState) -> AgentState:
     messages = state['messages']
@@ -73,8 +102,7 @@ def propose_action_node(state: AgentState) -> AgentState:
         to address, return a JSON object with "actionType": "none" to signal completion.
         
         IMPORTANT RULES FOR FINANCIAL DATA (Long-format):
-        - IMPUTE_MEDIAN/MEAN/MODE are RESTRICTED to non-accounting metadata columns only (e.g. sector, company_name).
-          For core accounting line items (revenue, assets, liabilities, equity, etc.), use IMPUTE_ZERO instead.
+        - For core accounting line items (revenue, assets, liabilities, equity, etc.), use IMPUTE_ZERO instead.
           Financial missing data usually means 'not reported' = 0.
         - Outlier detection MUST be calculated per 'line_item_canonical' (per-group), not globally across all values, 
         because different metrics (e.g. Total Assets vs Profit Margin) have completely different scales.
@@ -83,34 +111,33 @@ def propose_action_node(state: AgentState) -> AgentState:
         - RECONCILE_IDENTITY: Use to flag rows where Assets != Liabilities + Equity. This only flags, does NOT auto-correct.
         - STANDARDIZE_UNIT: Use when values across periods have inconsistent currency units (e.g. VND vs million VND).
         
-        Valid actionType values: "drop_rows", "impute_median", "impute_mean", "impute_mode", "impute_zero", 
+        Valid actionType values: "drop_rows", "impute_zero", 
         "cast_dtype", "drop_column", "fix_ocr_numeric", "reconcile_identity", "standardize_unit", "none"
         """
     )
-    structured_llm = llm.with_structured_output(CleaningAction, method='json_mode')
-    res = structured_llm.invoke(
+    response = llm.invoke(
         [system_prompt] + 
         [HumanMessage(content=f"Dataset profile (pre-computed): {dataset_profile}\nValid dataset columns: {valid_cols}")] + 
         messages + [HumanMessage(content=
             f"""Already proposed actions (statement_type, period, column, line_item_canonical, actionType): {covered_actions}
-            Summarize as JSON matching schema for ONE action only:
-            {{"file_path": "{file_path}", "file_format": "{file_format}", "reason": str, "column": str, "line_item_canonical": str|null, "statement_type": str|null, "period": str|null, "fiscal_year": int|null,
-            "rows_affected": int|null, "rows_ratio": float|null, 
-            "risk_level": "low"|"medium"|"high"|null, "actionType": "drop_rows"|"impute_median"|"impute_mean"|"impute_mode"|"impute_zero"|"cast_dtype"|"drop_column"|"fix_ocr_numeric"|"reconcile_identity"|"standardize_unit"|"none", 
-            "target_dtype": str|null, "target_unit": str|null}}
+            Summarize as raw JSON matching schema for ONE action only:
+            Example JSON format:
+            {{"file_path": "{file_path}", "file_format": "{file_format}", "reason": "clean data", "column": "value", "line_item_canonical": "tong_tai_san", "statement_type": "balance_sheet", "period": "2024Q4", "fiscal_year": 2024, "rows_affected": 0, "rows_ratio": 0.0, "risk_level": "low", "actionType": "none", "target_dtype": null, "target_unit": null}}
             """
         )]
     )
+    res = parse_json_cleaning(getattr(response, "content", ""))
     if not res.file_path:
         res.file_path = file_path
     if not res.file_format:
         res.file_format = file_format
 
-    summary = "\n".join(f"- {a.column} ({a.line_item_canonical}): {a.actionType}" for a in existing_actions)
+    all_actions = existing_actions + [res]
+    summary = "\n".join(f"- {a.column} ({a.line_item_canonical}): {a.actionType}" for a in all_actions)
     if res.actionType == CleaningActionType.NONE:
         return Command(update={"cleaning_done": True})
 
-    return Command(update={"pending_cleaning": existing_actions + [res], "messages": [HumanMessage(content=summary)]})
+    return Command(update={"pending_cleaning": all_actions, "messages": [HumanMessage(content=summary)]})
 
 def route_tool_or_finish(state) -> Literal["cleaning_tools", "propose_action"]: 
     last_msg = state["messages"][-1]

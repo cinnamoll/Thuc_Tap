@@ -6,6 +6,8 @@ from langchain_deepseek import ChatDeepSeek
 from langchain_core.tools import tool, InjectedToolCallId
 from langgraph.prebuilt import ToolNode
 import os
+import json
+import re
 import pandas as pd
 import matplotlib.pyplot as plt
 import seaborn as sns
@@ -36,6 +38,8 @@ def univariate_analyst_numeric(file_path: str, column: str, group_by: str, tool_
     Returns:
         Update the univariate field in AgentState with the dictionary containing value required
     """
+    if not file_path or not os.path.exists(file_path):
+        return Command(update={"messages": [ToolMessage(content=f"Dataset file '{file_path}' not found.", tool_call_id=tool_call_id)]})
     df = pd.read_csv(file_path)
     if column not in df.columns:
         return f"'{column}' not found in dataset."
@@ -175,6 +179,8 @@ def univariate_analyst_cat(file_path: str, column: str, tool_call_id: Annotated[
     Returns:
         Update the univariate field in AgentState with the dictionary containing value required
     """
+    if not file_path or not os.path.exists(file_path):
+        return Command(update={"messages": [ToolMessage(content=f"Dataset file '{file_path}' not found.", tool_call_id=tool_call_id)]})
     df = pd.read_csv(file_path)
     if column not in df.columns:
         return f"'{column}' not found in dataset."
@@ -310,10 +316,6 @@ def trend_analysis(file_path: str, column: str, group_by: str, time_col: str, to
         Trend chart saved to file + trend statistics per group
     """
     df = pd.read_csv(file_path)
-    for c in [column, group_by, time_col]:
-        if c not in df.columns:
-            return Command(update={"messages": [ToolMessage(content=f"Column '{c}' not found.", tool_call_id=tool_call_id)]})
-
     df = df.dropna(subset=[column, group_by, time_col])
     groups = df[group_by].unique()
     trend_stats = []
@@ -357,10 +359,6 @@ def common_size_analysis(file_path: str, column: str, group_by: str, base_item: 
         Common-size percentages per line item per period
     """
     df = pd.read_csv(file_path)
-    for c in [column, group_by, time_col]:
-        if c not in df.columns:
-            return Command(update={"messages": [ToolMessage(content=f"Column '{c}' not found.", tool_call_id=tool_call_id)]})
-
     results = []
     for period_val in df[time_col].unique():
         period_df = df[df[time_col] == period_val]
@@ -475,11 +473,26 @@ def cross_statement_consistency_check(file_path: str, tool_call_id: Annotated[st
 eda_tools = [univariate_analyst_numeric, univariate_analyst_cat, draw_graph, trend_analysis, common_size_analysis, cross_statement_consistency_check]
 tool_node = ToolNode(eda_tools)
 eda_llm = llm.bind_tools(tools=eda_tools)
-eda_tools_dict = {eda_tool.name: eda_tool for eda_tool in eda_tools}
 
 def eda_agent_node(state: AgentState):
-    response = eda_llm.invoke(state["messages"])
+    file_path = state.get('file_path', '')
+    file_path_prompt = SystemMessage(
+        content=f"The target dataset file_path is: '{file_path}'. "
+                f"When calling tools, you MUST pass file_path='{file_path}'."
+    )
+    response = eda_llm.invoke([file_path_prompt] + list(state["messages"]))
     return {"messages": [response]}
+
+def parse_json_insight(raw_content: str) -> EDAInsight:
+    text = raw_content.strip()
+    match = re.search(r"\{.*\}", text, re.DOTALL)
+    if match:
+        text = match.group(0)
+    try:
+        data = json.loads(text)
+        return EDAInsight.model_validate(data)
+    except Exception:
+        return EDAInsight(column="none", metric_value={"NONE": 0.0})
 
 def propose_insight_node(state: AgentState) -> AgentState:
     messages = state['messages']
@@ -519,17 +532,19 @@ def propose_insight_node(state: AgentState) -> AgentState:
         """
     )
 
-    structured_llm = llm.with_structured_output(EDAInsight, method="json_mode")
-    res = structured_llm.invoke(
+    response = llm.invoke(
         [system_prompt] + 
         [HumanMessage(content=f"Valid dataset columns: {valid_cols}")] + 
         messages + [HumanMessage(content=(
             f"""Already proposed insights: {covered_cols}\n
-            Summarize as JSON matching schema for ONE column with metric_name and value appended to metric_value dict only.\n
-            {{"column":str, "line_item_canonical":str|null, "metric_value":Dict[str:float]}}
+            Summarize as raw JSON matching schema for ONE column with metric_name and value appended to metric_value dict only.\n
+            Example JSON format:\n
+            {{"column": "value", "line_item_canonical": "tong_tai_san", "metric_value": {{"total_assets": 100.0}}}}
             """
         ))]
     )
+
+    res = parse_json_insight(getattr(response, "content", ""))
 
     summary = "\n".join(f"- {a.column} ({a.line_item_canonical}): {list(a.metric_value.keys())}" for a in existing_actions) 
     if list(res.metric_value.keys()) == ["NONE"]:

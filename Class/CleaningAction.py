@@ -4,9 +4,6 @@ from enum import Enum
 
 class CleaningActionType(str, Enum):
     DROP_ROWS = "drop_rows"
-    IMPUTE_MEDIAN = "impute_median"
-    IMPUTE_MEAN = "impute_mean"
-    IMPUTE_MODE = "impute_mode"
     IMPUTE_ZERO = "impute_zero"                     
     CAST_DTYPE = "cast_dtype"
     DROP_COLUMN = "drop_column"
@@ -43,15 +40,7 @@ class CleaningAction(BaseModel):
     def map_action_type(cls, value):
         if isinstance(value, str):
             v_lower = value.lower()
-            if v_lower in ("fill_missing", "impute", "fillna", "impute_missing"):
-                return CleaningActionType.IMPUTE_MODE
-            elif v_lower in ("drop", "remove_rows"):
-                return CleaningActionType.DROP_ROWS
-            elif v_lower in ("drop_col", "remove_column"):
-                return CleaningActionType.DROP_COLUMN
-            elif v_lower in ("change_dtype", "convert_dtype"):
-                return CleaningActionType.CAST_DTYPE
-            elif v_lower in ("fill_zero", "zero_fill", "impute_0"):
+            if v_lower in ("fill_missing", "impute", "fillna", "impute_missing", "fill_zero", "zero_fill", "impute_0"):
                 return CleaningActionType.IMPUTE_ZERO
             elif v_lower in ("fix_ocr", "ocr_fix", "ocr_numeric"):
                 return CleaningActionType.FIX_OCR_NUMERIC

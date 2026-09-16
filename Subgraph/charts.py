@@ -316,12 +316,27 @@ def build_financial_charts(dataset: Dict[str, Dict[str, float]], ratios: Dict[st
 
 def build_charts_node(state: FinancialReportState) -> dict:
     metrics = state.get("period_metrics") or {}
-    _scope, fallback = select_scope(metrics)
+    _scope, fallback = select_scope(metrics)[1] if select_scope(metrics)[1] else {}
     dataset = build_period_dataset(metrics) or fallback
     unit = state.get("currency_unit") or "VND_BILLION"
     batch_id = str(state.get("batch_id") or "batch")
     out_dir = os.path.join("example_output", batch_id, "charts")
 
-    chart_map = build_financial_charts(dataset, state.get("ratios") or {}, out_dir, unit)
+    # Read ratios from temporary file path instead of state
+    import json
+    import os
+
+    ratios_all = {}
+    ratios_path = state.get("ratios_path")
+    if ratios_path and os.path.exists(ratios_path):
+        try:
+            with open(ratios_path, 'r') as f:
+                ratios_all = json.load(f)
+        except Exception:
+            ratios_all = state.get("ratios") or {}
+    else:
+        ratios_all = state.get("ratios") or {}
+
+    chart_map = build_financial_charts(dataset, ratios_all, out_dir, unit)
     paths = [path for section_paths in chart_map.values() for path in section_paths]
     return {"chart_paths": paths, "chart_map": chart_map}
