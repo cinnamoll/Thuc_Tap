@@ -6,22 +6,17 @@ from langgraph.graph import END, START, StateGraph
 from langgraph.types import Command, Send
 
 from Class.FinancialState import FinancialReportState
-# from Subgraph.accounting_checks import run_accounting_checks
+from Subgraph.accounting_checks import run_accounting_checks
 from Subgraph.code_mapping import canonicalize_metrics
 from Subgraph.charts import build_charts_node
-from Subgraph.cleaning import cleaning
 from Subgraph.cross_check import cross_check_scope
-from Subgraph.eda import eda
-from Subgraph.executor import executor_node, review_execution_node
 from Subgraph.extraction import extraction_worker_node
-from Subgraph.feature import feature_engineering
 from Subgraph.harmonizer import schema_harmonizer
 from Subgraph.indexing import build_batch, index_files, select_files
 from Subgraph.materialize import materialize_dataset
 from Subgraph.ratio_trend import ratio_trend_engine
 from Subgraph.reporting import build_report_node, generate_report_node, review_report_node, route_after_report_review
 from Subgraph.supervisor import route_after_review, route_after_validation, supervisor_core
-from Subgraph.validator import validation
 
 load_dotenv()
 
@@ -40,16 +35,8 @@ graph.add_node("schema_harmonizer", schema_harmonizer)
 graph.add_node("materialize_dataset", materialize_dataset)
 graph.add_node("canonicalize_metrics", canonicalize_metrics)
 
-# graph.add_node("run_accounting_checks", run_accounting_checks)
+graph.add_node("run_accounting_checks", run_accounting_checks)
 graph.add_node("cross_check_scope", cross_check_scope)
-
-graph.add_node("supervisor", supervisor_core)
-graph.add_node("cleaning", cleaning)
-graph.add_node("eda", eda)
-graph.add_node("feature_engineering", feature_engineering)
-graph.add_node("validation", validation)
-graph.add_node("executor", executor_node)
-graph.add_node("review", review_execution_node)
 
 graph.add_node("ratio_trend_engine", ratio_trend_engine)
 graph.add_node("financial_charts", build_charts_node)
@@ -64,33 +51,10 @@ graph.add_conditional_edges("select_files", route_to_extraction_workers, ["extra
 graph.add_edge("extraction_worker", "schema_harmonizer")
 graph.add_edge("schema_harmonizer", "materialize_dataset")
 graph.add_edge("materialize_dataset", "canonicalize_metrics")
-# graph.add_edge("canonicalize_metrics", "run_accounting_checks")
-# graph.add_edge("run_accounting_checks", "cross_check_scope")
+graph.add_edge("canonicalize_metrics", "run_accounting_checks")
+graph.add_edge("run_accounting_checks", "cross_check_scope")
 graph.add_edge("canonicalize_metrics", "cross_check_scope")
-graph.add_edge("cross_check_scope", "supervisor")
-
-graph.add_edge("cleaning", "validation")
-graph.add_edge("eda", "validation")
-graph.add_edge("feature_engineering", "validation")
-graph.add_conditional_edges(
-    "validation",
-    route_after_validation,
-    {
-        "executor": "executor", 
-        "supervisor": "supervisor"
-    }
-)
-graph.add_edge("executor", "review")
-graph.add_conditional_edges(
-    "review",
-    route_after_review,
-    {
-        "executor": "executor", 
-        "validation": "validation", 
-        "supervisor": "supervisor"
-    }
-)
-
+graph.add_edge("cross_check_scope", "ratio_trend_engine")
 graph.add_edge("ratio_trend_engine", "financial_charts")
 graph.add_edge("financial_charts", "generate_report")
 graph.add_edge("generate_report", "review_report")
