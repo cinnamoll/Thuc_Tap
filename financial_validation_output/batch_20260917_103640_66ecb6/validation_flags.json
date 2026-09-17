@@ -1,0 +1,9 @@
+[
+  {
+    "flag_type": "high_leverage_warning",
+    "field": "tong_tai_san",
+    "message": "Tỷ lệ Nợ/Tổng tài sản cao nguy hiểm (143.1%)",
+    "severity": "HIGH",
+    "period_key": "2024Q4"
+  }
+]

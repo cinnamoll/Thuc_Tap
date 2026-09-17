@@ -42,7 +42,6 @@ def value_series(dataset: Dict[str, Dict[str, float]], keys: List[str], field: s
     return series
 
 def finish_graphing(fig, path: str) -> str:
-    """Lưu figure ra ``path`` (dpi 150, bbox tight) rồi đóng figure."""
     os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
     fig.savefig(path, bbox_inches="tight", dpi=150)
     plt.close(fig)

@@ -1,0 +1,12 @@
+{
+  "2025Q2": {
+    "total_score": 60.0,
+    "risk_category": "Moderate Risk",
+    "components": {
+      "profitability": 35.0,
+      "leverage": 0.0,
+      "liquidity": 10.0,
+      "cash_flow": 15.0
+    }
+  }
+}

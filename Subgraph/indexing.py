@@ -179,10 +179,10 @@ def detect_currency_unit(raw_pages: List[str], ranges: Dict[str, Tuple[int, int]
         return m.group(1).upper()
     return "VND"
 
-def build_batch(state: FinancialReportState) -> dict:
+def build_batch_node(state: FinancialReportState) -> dict:
     return {"batch_id": f"batch_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:6]}"}
 
-def index_files(state: FinancialReportState) -> dict:
+def index_files_node(state: FinancialReportState) -> dict:
     input_files = state.get("input_files", []) or []
     plan: List[Dict[str, Any]] = []
 
@@ -236,7 +236,7 @@ def index_files(state: FinancialReportState) -> dict:
 
     return {"extraction_plan": plan, "input_files": input_files}
 
-def select_files(state: FinancialReportState) -> dict:
+def select_files_node(state: FinancialReportState) -> dict:
     """Gom theo kỳ: báo cáo chính dùng bản HỢP NHẤT, bản riêng để đối chiếu."""
     plan = state.get("extraction_plan", []) or []
     grouped: Dict[str, Dict[str, Dict[str, Any]]] = {}

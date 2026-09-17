@@ -39,7 +39,7 @@ def write_contract_csv(df: pd.DataFrame, path: str) -> str:
     out.to_csv(path, index=False)
     return path
 
-def materialize_dataset(state: FinancialReportState) -> dict:
+def materialize_node(state: FinancialReportState) -> dict:
     rows = list(state.get("harmonized_dataset") or [])
     batch_id = str(state.get("batch_id") or "batch")
     out_dir = os.path.join("example_output", batch_id)
@@ -61,13 +61,8 @@ def materialize_dataset(state: FinancialReportState) -> dict:
     else:
         harmonized_paths["UNKNOWN"] = write_contract_csv(df, os.path.join(out_dir, "UNKNOWN", "harmonized.csv"))
 
-    if str(state.get("analysis_mode") or "") == "agent":
-        work_dir = os.path.join(out_dir, "_work")
-        shared_path = write_contract_csv(df, os.path.join(work_dir, "harmonized_all.csv"))
-        output_path = work_dir
-    else:
-        shared_path = next(iter(harmonized_paths.values()))
-        output_path = out_dir
+    shared_path = next(iter(harmonized_paths.values()))
+    output_path = out_dir
 
     profile = profile_dataframe(df)
     periods = sorted({str(r.get("period_key")) for r in rows if r.get("period_key")})

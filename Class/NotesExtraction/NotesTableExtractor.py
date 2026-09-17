@@ -1112,7 +1112,7 @@ class NotesTableExtractor:
                     if not heading:
                         top = block["top"]
                         above = [r for r in visual_rows if r[0].bottom <= top]
-                        for r in reversed(above[12:]):
+                        for r in reversed(above[-12:]):
                             r_txt = " ".join(w.text for w in r).strip()
                             m_tab = cls.TABLE_NAME_RE.search(r_txt)
                             if m_tab:

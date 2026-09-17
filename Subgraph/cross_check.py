@@ -6,7 +6,7 @@ BS_FIELDS = ("tong_tai_san", "von_chu_so_huu", "no_phai_tra", "tong_nguon_von")
 IS_FIELDS = ("doanh_thu", "loi_nhuan_sau_thue")
 INFO_FIELDS = set(IS_FIELDS)
 
-def cross_check_scope(state: FinancialReportState) -> dict:
+def cross_check_scope_node(state: FinancialReportState) -> dict:
     metrics: Dict[str, Dict[str, Dict[str, float]]] = state.get("period_metrics") or {}
     consolidated = metrics.get("consolidated") or {}
     separate = metrics.get("separate") or {}

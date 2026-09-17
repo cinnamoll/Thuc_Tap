@@ -30,6 +30,10 @@ def parse_number(val):
             t = t.replace(",", "")
         else:
             t = t.replace(",", ".")
+    elif "." in t and "," not in t:
+        parts = t.split(".")
+        if len(parts[-1]) == 3 and all(len(p) <= 3 for p in parts[:-1]):
+            t = t.replace(".", "")
 
     try:
         val = int(t)

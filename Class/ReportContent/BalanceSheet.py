@@ -42,7 +42,7 @@ class BalanceSheet(BaseModel):
         return parse_number(value)
 
     def check_identity(self) -> Optional[str]:
-        if self.tong_tai_san and self.no_phai_tra is not None and self.von_chu_so_huu is not None:
+        if self.tong_tai_san is not None and self.no_phai_tra is not None and self.von_chu_so_huu is not None:
             expected = (self.no_phai_tra or 0) + (self.von_chu_so_huu or 0)
             diff = abs(self.tong_tai_san - expected)
             if diff > 1e-2:

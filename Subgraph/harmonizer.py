@@ -70,7 +70,7 @@ def meta_index(state: FinancialReportState) -> Dict[Any, Dict[str, Any]]:
             idx[(item.get("scope"), item.get("period_key"))] = item
     return idx
 
-def schema_harmonizer(state: FinancialReportState) -> dict:
+def schema_harmonizer_node(state: FinancialReportState) -> dict:
     rows: List[Dict[str, Any]] = []
     narrative_store: List[Dict[str, Any]] = []
 

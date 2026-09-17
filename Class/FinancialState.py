@@ -51,7 +51,17 @@ class FinancialReportState(AgentState, total=False):
     narratives_mda: Dict[str, str]
     final_report_md: str
     final_reports: Dict[str, str]
+    rag_report_md: str
+    rag_reports: Dict[str, str]
     output_report_path: Optional[str]
     output_report_paths: List[str]
+    rag_report_path: Optional[str]
+    rag_report_paths: List[str]
 
-    analysis_mode: Literal["deterministic", "agent"]
+    review_status: Optional[str]
+    rejection_reason: Optional[str]
+    feedback_history: List[Dict[str, Any]]
+    feedback_context: Optional[str]
+    retry_count: Optional[int]
+    max_retries: Optional[int]
+    last_feedback_analysis: Optional[Dict[str, Any]]
