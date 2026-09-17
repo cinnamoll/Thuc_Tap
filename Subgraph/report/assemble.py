@@ -9,7 +9,7 @@ from Subgraph.charts import SUBSECTION_TITLES, to_billion
 from Subgraph.ratio_trend import period_sort_key
 
 load_dotenv()
-llm = ChatDeepSeek(model="deepseek-v4-flash")
+llm = ChatDeepSeek(model="deepseek-v4-flash", temperature=0)
 
 TABLE_FIELDS: List[tuple] = [
     ("tong_tai_san", "Tổng tài sản"),
@@ -170,7 +170,7 @@ def assemble_report_markdown(narrative: str, dataset: Dict[str, Dict[str, float]
 
 def build_yaml_front_matter(symbol: str, period_key: str, scope: str, unit: str, batch_id: str, input_files: List[str] = None,
                             previous_key: str = "", next_key: str = "", flags: List[Dict[str, Any]] = None, review_status: str = "approved",
-                            report_version: int = 1) -> str:
+                            report_version: int = 1, company_name: str = "", entity_id: str = "") -> str:
     flags_list = flags or []
     has_flags = len(flags_list) > 0
     missing_prior = not bool(previous_key)
@@ -182,11 +182,12 @@ def build_yaml_front_matter(symbol: str, period_key: str, scope: str, unit: str,
         "accounting_checks_passed": not has_flags,
     }
 
+    effective_entity_id = entity_id or symbol
     yaml_lines = [
         "---",
-        "entity_id: null",
-        "company_name: null",
-        f"symbol: {json.dumps(symbol) if symbol else 'null'}",
+        f"entity_id: {json.dumps(effective_entity_id, ensure_ascii=False) if effective_entity_id else 'null'}",
+        f"company_name: {json.dumps(company_name, ensure_ascii=False) if company_name else 'null'}",
+        f"symbol: {json.dumps(symbol, ensure_ascii=False) if symbol else 'null'}",
         f"period_key: {json.dumps(period_key)}",
         f"scope: {json.dumps(scope or 'separate')}",
         f"currency_unit: {json.dumps(unit or 'ty_vnd')}",
@@ -197,8 +198,8 @@ def build_yaml_front_matter(symbol: str, period_key: str, scope: str, unit: str,
         "generated_at: null",
         f"report_version: {report_version}",
         f"review_status: {json.dumps(review_status)}",
-        f"prev_period_file: {json.dumps(f'Bao_Cao_RAG_{previous_key}.md') if previous_key else 'null'}",
-        f"next_period_file: {json.dumps(f'Bao_Cao_RAG_{next_key}.md') if next_key else 'null'}",
+        f"prev_period_file: {json.dumps(f'Bao_Cao_{previous_key}_RAG.md') if previous_key else 'null'}",
+        f"next_period_file: {json.dumps(f'Bao_Cao_{next_key}_RAG.md') if next_key else 'null'}",
         "data_quality_flags:",
     ]
     for k, v in data_quality_flags.items():
@@ -267,6 +268,8 @@ def assemble_rag_report_markdown(
     input_files: List[str] = None,
     review_status: str = "approved",
     report_version: int = 1,
+    company_name: str = "",
+    entity_id: str = "",
 ) -> str:
     keys = sorted((dataset or {}).keys(), key=period_sort_key)
     period_data = (dataset or {}).get(period_key) or {}
@@ -284,6 +287,8 @@ def assemble_rag_report_markdown(
         flags=flags,
         review_status=review_status,
         report_version=report_version,
+        company_name=company_name,
+        entity_id=entity_id,
     )
     report.append(yaml_header)
     report.append(f"\n# BÁO CÁO PHÂN TÍCH TÀI CHÍNH (RAG OPTIMIZED) — {symbol or 'DOANH NGHIỆP'}\n")

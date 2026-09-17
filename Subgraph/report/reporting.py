@@ -1,4 +1,5 @@
 import os
+import shutil
 from typing import Dict, List
 from langgraph.types import interrupt
 
@@ -15,6 +16,8 @@ def generate_report_node(state: FinancialReportState) -> dict:
     chart_paths = list(state.get("chart_paths") or [])
     chart_map = state.get("chart_map") or {}
     symbol = state.get("symbol") or ""
+    company_name = state.get("company_name") or ""
+    entity_id = state.get("entity_id") or symbol or ""
     flags_all = list(state.get("validation_flags") or [])
     ratios_all = state.get("ratios") or {}
     trends_all = state.get("trends") or {}
@@ -82,6 +85,8 @@ def generate_report_node(state: FinancialReportState) -> dict:
             period_key=period_key, previous_period=previous_key, next_period=nxt_key,
             batch_id=batch_id, input_files=input_files, review_status=review_status,
             report_version=retry_count,
+            company_name=company_name,
+            entity_id=entity_id,
         )
 
     first_key = sorted_keys[0] if sorted_keys else ""
@@ -95,16 +100,11 @@ def generate_report_node(state: FinancialReportState) -> dict:
             period_dir = os.path.join(out_dir, str(period_key))
             os.makedirs(period_dir, exist_ok=True)
 
-            reader_path = os.path.join(period_dir, f"Bao_Cao_Reader_{period_key}.md")
-            with open(reader_path, "w", encoding="utf-8") as fh:
-                fh.write(reports[period_key])
-            output_paths.append(reader_path)
-
             default_path = os.path.join(period_dir, f"Bao_Cao_{period_key}.md")
             with open(default_path, "w", encoding="utf-8") as fh:
                 fh.write(reports[period_key])
 
-            rag_path = os.path.join(period_dir, f"Bao_Cao_RAG_{period_key}.md")
+            rag_path = os.path.join(period_dir, f"Bao_Cao_{period_key}_RAG.md")
             with open(rag_path, "w", encoding="utf-8") as fh:
                 fh.write(rag_reports[period_key])
             rag_output_paths.append(rag_path)
@@ -145,20 +145,17 @@ def build_report_node(state: FinancialReportState) -> dict:
         period_dir = os.path.join(out_dir, str(period_key))
         os.makedirs(period_dir, exist_ok=True)
 
-        reader_path = os.path.join(period_dir, f"Bao_Cao_Reader_{period_key}.md")
-        with open(reader_path, "w", encoding="utf-8") as fh:
-            fh.write(report_md)
-        output_paths.append(reader_path)
-
         default_path = os.path.join(period_dir, f"Bao_Cao_{period_key}.md")
         with open(default_path, "w", encoding="utf-8") as fh:
             fh.write(report_md)
 
         rag_md = rag_reports.get(period_key) or report_md
-        rag_path = os.path.join(period_dir, f"Bao_Cao_RAG_{period_key}.md")
+        rag_path = os.path.join(period_dir, f"Bao_Cao_{period_key}_RAG.md")
         with open(rag_path, "w", encoding="utf-8") as fh:
             fh.write(rag_md)
         rag_output_paths.append(rag_path)
+
+    symbol = state.get("symbol") or state.get("entity_id") or "UNKNOWN"
 
     return {
         "output_report_path": output_paths[0] if output_paths else None,

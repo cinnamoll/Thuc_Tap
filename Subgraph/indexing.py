@@ -5,6 +5,7 @@ from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple
 import pdfplumber
+from collections import Counter
 
 from Class.FinancialState import FinancialReportState
 from Class.TableExtractor import fold_text, folded_contains
@@ -35,6 +36,8 @@ class StatementLocation:
     num_pages: int
     ranges: Dict[str, Tuple[int, int]] = field(default_factory=dict)
     extraction_method: str = "content_scan"
+    company_name: str = ""
+    entity_id: str = ""
 
     def as_dict(self) -> Dict[str, Any]:
         d = asdict(self)
@@ -94,21 +97,38 @@ def detect_period(file_path: str, cover_text: str) -> Tuple[Optional[int], Optio
         year = int(m.group(1)) if m else None
     return year, quarter
 
-def detect_symbol(compacts: List[str], cover_text: str) -> Tuple[str, str]:
-    """Trả (symbol, tax_code). Symbol lấy từ câu 'stock code CMI' trong Thuyết minh."""
+def detect_company_name(cover_text: str, compacts: List[str] = None) -> str:
+    lines = [line.strip() for line in (cover_text or "").split("\n") if line.strip()]
+    if not lines:
+        return ""
+
+    for line in lines[:5]:
+        if re.search(r"(?:báo\s*cáo\s*tài\s*chính|financial\s*report|financial\s*statements|bảng\s*cân\s*đối|mẫu\s*số|form\s*no|mst|mmsstt|quy|quarter)", line, re.I):
+            continue
+        if re.search(r"(?:công\s*ty|tổng\s*công\s*ty|tập\s*đoàn|ngân\s*hàng|joint\s*stock|corporation|company|jsc|ltd)", line, re.I):
+            return line
+
+    if lines and len(lines[0]) > 3 and not re.search(r"(?:báo\s*cáo|financial\s*statements|mẫu\s*số|form|trang|page)", lines[0], re.I):
+        return lines[0]
+    return ""
+
+def detect_symbol(compacts: List[str], cover_text: str, raw_pages: List[str] = None) -> Tuple[str, str]:
     tax = ""
-    m = re.search(r"MST[:\s]*(\d{9,13})", (cover_text or "") + " " + " ".join(compacts[:3]), re.I)
+    m = re.search(r"(?:MST|MMSSTT)[:\s]*(\d{9,13})", (cover_text or "") + " " + " ".join(compacts[:3]), re.I)
     if m:
         tax = m.group(1)
 
     for c in compacts:
-        m = re.search(r"stockcode([a-z]{2,6})", c)
-        if m and m.group(1).upper() not in ("NOTE", "NOTES"):
+        m = re.search(r"(?:stockcode|macophieu|machungkhoan)(?:la|is)?([a-z]{2,6})", c)
+        if m and m.group(1).upper() not in ("NOTE", "NOTES", "THE", "AND", "FOR", "VND", "USD", "CONG", "TY", "NAM", "BAO", "CAO"):
             return m.group(1).upper(), tax
-    for c in compacts:
-        m = re.search(r"macophieu([a-z]{2,6})", c)
-        if m:
-            return m.group(1).upper(), tax
+
+    if raw_pages:
+        for t in raw_pages:
+            m = re.search(r"(?:mã\s+(?:chứng\s+khoán|cổ\s+phiếu)|stock\s+code|ticker(?:\s+symbol)?)\s*(?:là|is|:)?\s*([A-Za-z]{2,6})\b", t, re.I)
+            if m and m.group(1).upper() not in ("NOTE", "NOTES", "THE", "AND", "FOR", "VND", "USD", "CONG", "TY", "NAM", "BAO", "CAO"):
+                return m.group(1).upper(), tax
+
     return "UNKNOWN", tax
 
 def locate_ranges(compacts: List[str]) -> Dict[str, Tuple[int, int]]:
@@ -165,18 +185,49 @@ def detect_form_and_circular(raw_pages: List[str], ranges: Dict[str, Tuple[int, 
     return form, circular
 
 def detect_currency_unit(raw_pages: List[str], ranges: Dict[str, Tuple[int, int]]) -> str:
-    page_text = raw_pages[ranges["BS"][0]] if "BS" in ranges and ranges["BS"][0] < len(raw_pages) else ""
-    if not page_text:
-        return "VND"
+    locations_to_check = []
+
+    if len(raw_pages) >= 2:
+        locations_to_check.extend(raw_pages[:2])
+    elif len(raw_pages) >= 1:
+        locations_to_check.append(raw_pages[0])
+
+    if "BS" in ranges and ranges["BS"][0] < len(raw_pages):
+        bs_start, bs_end = ranges["BS"]
+        for i in range(max(0, bs_start - 1), min(len(raw_pages), bs_end + 2)):
+            locations_to_check.append(raw_pages[i])
+
+    # 3. Notes section
+    if "NOTES" in ranges and ranges["NOTES"][0] < len(raw_pages):
+        notes_start, notes_end = ranges["NOTES"]
+        for i in range(notes_start, min(len(raw_pages), notes_start + 3)):
+            locations_to_check.append(raw_pages[i])
+
+    seen = set()
+    unique_locations = []
+    for text in locations_to_check:
+        if text not in seen:
+            seen.add(text)
+            unique_locations.append(text)
 
     SCALE_UNITS = {"nghìn": "VND_THOUSAND", "ngàn": "VND_THOUSAND", "triệu": "VND_MILLION", "tỷ": "VND_BILLION"}
-    m = re.search(r"(nghìn|ngàn|triệu|tỷ)\s*(?:đồng|VND|VNĐ)", page_text, re.I)
-    if m:
-        return SCALE_UNITS.get(m.group(1).lower(), "VND")
+    CURRENCY_PATTERNS = [
+        (r"(nghìn|ngàn|triệu|tỷ)\s*(?:đồng|VND|VNĐ)", lambda m: SCALE_UNITS.get(m.group(1).lower(), "VND")),
+        (r"(?:Currency\s*unit|Đơn\s*vị\s*tính|Currency)\s*:?\s*([A-Za-zĐđ]{3,7})", lambda m: m.group(1).upper()),
+        (r"(?:Tỷ\s*Đồng|tỷ\s*đồng)", lambda m: "VND_BILLION"),
+        (r"(?:Triệu\s*Đồng|triệu\s*đồng)", lambda m: "VND_MILLION"),
+        (r"(?:Nghìn\s*Đồng|nghìn\s*đồng)", lambda m: "VND_THOUSAND"),
+    ]
 
-    m = re.search(r"(?:Currency\s*unit|Đơn\s*vị\s*tính|Currency)\s*:?\s*([A-Za-zĐđ]{3,7})", page_text, re.I)
-    if m:
-        return m.group(1).upper()
+    for page_text in unique_locations:
+        if not page_text:
+            continue
+
+        for pattern, converter in CURRENCY_PATTERNS:
+            m = re.search(pattern, page_text, re.I)
+            if m:
+                return converter(m)
+
     return "VND"
 
 def build_batch_node(state: FinancialReportState) -> dict:
@@ -193,7 +244,9 @@ def index_files_node(state: FinancialReportState) -> dict:
 
         cover = "\n".join(raw[:2])
         year, quarter = detect_period(path, cover)
-        symbol, tax_code = detect_symbol(compacts, cover)
+        symbol, tax_code = detect_symbol(compacts, cover, raw)
+        company_name = detect_company_name(cover, compacts)
+        entity_id = symbol if symbol != "UNKNOWN" else tax_code
         ranges = locate_ranges(compacts)
         scope = detect_scope(compacts, ranges) if ranges else "unknown"
         lang = detect_lang(compacts, ranges) if ranges else "en"
@@ -224,20 +277,68 @@ def index_files_node(state: FinancialReportState) -> dict:
             num_pages=len(raw),
             ranges=ranges,
             extraction_method="title_scan_after_index",
+            company_name=company_name,
+            entity_id=entity_id,
         )
         plan.append(loc.as_dict())
 
-    known = [it.get("symbol") for it in plan if it.get("symbol") and it.get("symbol") != "UNKNOWN"]
-    if known:
-        fallback = max(set(known), key=known.count)
-        for it in plan:
-            if it.get("symbol") == "UNKNOWN":
-                it["symbol"] = fallback
+    known_symbols = [it.get("symbol") for it in plan if it.get("symbol") and it.get("symbol") != "UNKNOWN"]
+    known_companies = [it.get("company_name") for it in plan if it.get("company_name")]
 
-    return {"extraction_plan": plan, "input_files": input_files}
+    if known_symbols:
+        symbol_counts = Counter(known_symbols)
+        fallback_symbol = symbol_counts.most_common(1)[0][0]
+    else:
+        fallback_symbol = state.get("symbol") or ""
+
+    if known_companies:
+        company_counts = Counter(known_companies)
+        fallback_company = company_counts.most_common(1)[0][0]
+
+        vn_companies = [c for c in known_companies if re.search(r"(?:công\s*ty|cổ\s*phần|tập\s*đoàn)", c, re.I)]
+        if vn_companies:
+            vn_company_counts = Counter(vn_companies)
+            fallback_company = vn_company_counts.most_common(1)[0][0]
+    else:
+        fallback_company = state.get("company_name") or ""
+
+    for it in plan:
+        if it.get("symbol") == "UNKNOWN" and fallback_symbol != "UNKNOWN":
+            it["symbol"] = fallback_symbol
+        if not it.get("company_name") and fallback_company:
+            it["company_name"] = fallback_company
+        if not it.get("entity_id") or it.get("entity_id") == "UNKNOWN":
+            it["entity_id"] = it.get("symbol") if it.get("symbol") != "UNKNOWN" else (it.get("tax_code") or "")
+
+    file_metadata = [
+        {
+            "file_path": item["path"],
+            "symbol": item["symbol"],
+            "company_name": item["company_name"],
+            "entity_id": item["entity_id"],
+            "period_key": item["period_key"]
+        }
+        for item in plan
+    ]
+
+    resolved_symbol = fallback_symbol if fallback_symbol != "UNKNOWN" else (state.get("symbol") or "")
+    resolved_company = fallback_company or (state.get("company_name") or "")
+    resolved_entity_id = resolved_symbol or (state.get("entity_id") or "")
+    if not resolved_entity_id:
+        known_taxes = [it.get("tax_code") for it in plan if it.get("tax_code")]
+        if known_taxes:
+            resolved_entity_id = known_taxes[0]
+
+    return {
+        "extraction_plan": plan,
+        "input_files": input_files,
+        "file_metadata": file_metadata,  
+        "symbol": resolved_symbol,
+        "company_name": resolved_company,
+        "entity_id": resolved_entity_id,
+    }
 
 def select_files_node(state: FinancialReportState) -> dict:
-    """Gom theo kỳ: báo cáo chính dùng bản HỢP NHẤT, bản riêng để đối chiếu."""
     plan = state.get("extraction_plan", []) or []
     grouped: Dict[str, Dict[str, Dict[str, Any]]] = {}
 

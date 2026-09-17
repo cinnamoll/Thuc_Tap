@@ -22,6 +22,7 @@ class FinancialReportState(AgentState, total=False):
     input_files: List[str]
     company_name: Optional[str]
     symbol: Optional[str]
+    entity_id: Optional[str]
 
     extraction_plan: List[Dict[str, Any]]
     period_index: List[Dict[str, Any]]

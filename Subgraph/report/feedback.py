@@ -10,7 +10,7 @@ from Class.FinancialState import FinancialReportState
 from Class.ReportResponse import FeedbackCategory, RejectionAnalysis
 
 load_dotenv()
-llm = ChatDeepSeek(model="deepseek-v4-flash")
+llm = ChatDeepSeek(model="deepseek-v4-flash", temperature=0)
 
 VALID_TARGET_NODES = {
     "canonicalize_metrics",
