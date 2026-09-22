@@ -2,4 +2,12 @@
 __pycache__
 .vscode
 .cursor
-.gitignore
+.venv
+dataset
+temp.ipynb
+.antigravityignore
+functions.md
+.claude
+.agents
+.pytest_cache
+chroma_db_financial
