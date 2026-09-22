@@ -82,7 +82,7 @@ def code_to_name(report_type: str, code: Optional[str], row_label: Optional[str]
         return folded[:60]
     return f"code_{code}" if code else "unknown"
 
-def canonicalize_metrics(state: FinancialReportState) -> dict:
+def mapping_node(state: FinancialReportState) -> dict:
     rows: List[Dict[str, Any]] = list(state.get("harmonized_dataset") or [])
     period_metrics: Dict[str, Dict[str, Dict[str, float]]] = {}
 

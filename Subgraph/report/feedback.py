@@ -13,7 +13,7 @@ load_dotenv()
 llm = ChatDeepSeek(model="deepseek-v4-flash", temperature=0)
 
 VALID_TARGET_NODES = {
-    "canonicalize_metrics",
+    "mapping_node",
     "accounting_check",
     "financial_forecasting",
     "ratio_trend_engine",
@@ -29,7 +29,7 @@ INTERPRET_FEEDBACK_SYSTEM_PROMPT = """Bạn là Chuyên gia Phân tích Phản h
 Nhiệm vụ của bạn là phân tích lý do người dùng từ chối/yêu cầu sửa báo cáo (rejection_reason) và xác định node cần quay lại trong pipeline LangGraph.
 
 Các node hợp lệ (VALID_TARGET_NODES) và trách nhiệm:
-1. "canonicalize_metrics": Sai số liệu thô / mapping chỉ tiêu kế toán VAS.
+1. "mapping_node": Sai số liệu thô / mapping chỉ tiêu kế toán VAS.
 2. "accounting_check": Bảng cân đối kế toán, kết quả kinh doanh, lưu chuyển tiền tệ không khớp (BS/IS/CF), vi phạm kiểm định kiểm toán.
 3. "financial_forecasting": Sai công thức dự báo, giả định forecast không phù hợp.
 4. "ratio_trend_engine": Sai tính toán tỷ số tài chính (ROE, ROA, Debt/Equity, Net Margin) hoặc xu hướng.
@@ -38,7 +38,7 @@ Các node hợp lệ (VALID_TARGET_NODES) và trách nhiệm:
 7. "review_report": Yêu cầu không thể tự sửa (out_of_scope), thông tin không rõ ràng hoặc cần con người xử lý.
 
 Các danh mục (category):
-- "data_error": Sai số liệu / mapping VAS (Target: "canonicalize_metrics")
+- "data_error": Sai số liệu / mapping VAS (Target: "mapping_node")
 - "validation_miss": BS/IS/CF không khớp, lỗi kiểm định (Target: "accounting_check")
 - "calc_error": Sai công thức forecast / tỷ số (Target: "financial_forecasting" hoặc "ratio_trend_engine")
 - "scope_error": Sai kỳ báo cáo, nhầm bản riêng/hợp nhất (Target: "select_files_node")

@@ -7,7 +7,7 @@ from langgraph.types import Command, Send
 
 from Class.FinancialState import FinancialReportState
 from Subgraph.accounting_checks import accounting_check_node
-from Subgraph.code_mapping import canonicalize_metrics
+from Subgraph.code_mapping import mapping_node
 from Subgraph.charts import build_charts_node
 from Subgraph.cross_check import cross_check_scope_node
 from Subgraph.extraction import extraction_worker_node
@@ -43,7 +43,7 @@ graph.add_node("extraction_worker", extraction_worker_node)
 
 graph.add_node("schema_harmonizer_node", schema_harmonizer_node)
 graph.add_node("materialize_node", materialize_node)
-graph.add_node("canonicalize_metrics", canonicalize_metrics)
+graph.add_node("mapping_node", mapping_node)
 
 graph.add_node("financial_validation", financial_validation_node)
 graph.add_node("accounting_check", accounting_check_node)
@@ -64,8 +64,8 @@ graph.add_edge("index_files_node", "select_files_node")
 graph.add_conditional_edges("select_files_node", route_to_extraction_workers, ["extraction_worker"])
 graph.add_edge("extraction_worker", "schema_harmonizer_node")
 graph.add_edge("schema_harmonizer_node", "materialize_node")
-graph.add_edge("materialize_node", "canonicalize_metrics")
-graph.add_edge("canonicalize_metrics", "financial_validation")
+graph.add_edge("materialize_node", "mapping_node")
+graph.add_edge("mapping_node", "financial_validation")
 graph.add_edge("financial_validation", "cross_check_scope_node")
 graph.add_edge("cross_check_scope_node", "financial_forecasting")
 graph.add_edge("financial_forecasting", "accounting_check")
@@ -87,6 +87,10 @@ graph.add_edge("build_report", END)
 
 checkpointer = InMemorySaver()
 app = graph.compile(checkpointer=checkpointer)
+
+img = app.get_graph().draw_mermaid_png()
+with open('graph_image.png', 'wb') as f:
+    f.write(img)
 
 if __name__ == "__main__":
     thread_config = {"configurable": {"thread_id": str(uuid.uuid4())}}
