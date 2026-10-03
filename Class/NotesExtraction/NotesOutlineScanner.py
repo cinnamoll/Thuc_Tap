@@ -1,7 +1,7 @@
 import bisect
 import re
 from collections import Counter
-from dataclasses import dataclass, field as dfield
+# from dataclasses import dataclass, field as dfield
 from typing import Dict, List, Optional, Tuple
 import pdfplumber
 

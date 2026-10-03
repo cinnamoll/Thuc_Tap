@@ -1,0 +1,12 @@
+langchain-community
+langchain-core
+langchain-deepseek
+langchain-google-genai
+langchain-text-splitters
+langgraph
+matplotlib
+numpy
+pandas
+pdf2image
+pdfplumber
+pydantic
